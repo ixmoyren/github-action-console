@@ -12,23 +12,9 @@ pub(super) fn default_download_dir() -> std::io::Result<std::path::PathBuf> {
 }
 
 pub(super) fn default_store_path() -> std::io::Result<std::path::PathBuf> {
-    let base = if cfg!(target_os = "windows") {
-        std::env::var_os("APPDATA").map(std::path::PathBuf::from)
-    } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME")
-            .map(|home| std::path::PathBuf::from(home).join("Library/Application Support"))
-    } else {
-        std::env::var_os("XDG_DATA_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|home| std::path::PathBuf::from(home).join(".local/share"))
-            })
-    };
+    let base = dirs::data_dir().unwrap_or_else(std::env::temp_dir);
 
-    let dir = base
-        .unwrap_or_else(std::env::temp_dir)
-        .join("github-action-console");
+    let dir = base.join("github-action-console");
     std::fs::create_dir_all(&dir)?;
     Ok(dir.join("console.sqlite"))
 }
