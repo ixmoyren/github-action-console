@@ -1,4 +1,8 @@
 use super::AppView;
+
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::status_bar::StatusBar;
+
 use super::*;
 
 impl AppView {
@@ -106,28 +110,24 @@ impl AppView {
             ),
         };
 
-        let mut notices = div().flex().flex_col().gap_1();
+        let mut bar = StatusBar::new().right(rate);
+
         if let Some(problem) = self.current_failure() {
-            notices = notices.child(Label::new(crate::app::notice_for(problem).text).text_sm());
+            bar = bar.child(Label::new(crate::app::notice_for(problem).text).text_sm());
         }
         for notice in &self.notices {
-            notices = notices.child(Label::new(notice.text.clone()).text_sm());
+            bar = bar.child(Label::new(notice.text.clone()).text_sm());
         }
         if !self.notices.is_empty() {
-            notices = notices.child(
+            bar = bar.child(
                 Button::new("dismiss-notices")
+                    .ghost()
+                    .xsmall()
                     .label(labels::NOTICES_DISMISS)
                     .on_click(cx.listener(|this, _, _, cx| this.dismiss_notices(cx))),
             );
         }
 
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .p_3()
-            .child(Label::new(rate).text_sm())
-            .child(notices)
-            .into_any_element()
+        bar.into_any_element()
     }
 }
