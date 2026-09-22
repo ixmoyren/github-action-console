@@ -4,8 +4,8 @@ pub const LABEL_BUILD_TARGET: &str = "构建目标";
 pub const LABEL_PACKAGING_CONFIG: &str = "打包配置";
 pub const UNSPECIFIED: &str = "未指定";
 
-pub const LOGIN_TITLE: &str = "登录 GitHub";
-pub const LOGIN_START: &str = "使用 GitHub 登录";
+pub const LOGIN_TITLE: &str = "使用 OAuth 登录";
+pub const LOGIN_START: &str = "使用 OAuth 登录";
 pub const LOGIN_STARTING: &str = "正在请求授权…";
 pub const LOGIN_WAITING: &str = "等待授权中…";
 pub const LOGIN_INSTRUCTION: &str = "请在浏览器中打开下面的地址，并输入一次性代码：";
@@ -27,7 +27,7 @@ pub const NOTICE_NETWORK: &str = "网络请求失败，请检查网络后重试�
 pub const NOTICE_UNEXPECTED: &str = "出现未预期的错误，请重试。";
 pub const NOTICE_MISSING_SCOPES: &str = "凭据权限不足。需要 repo + workflow（粗粒度 PAT），或 Contents: RW、Actions: RW、Workflows: RW（细粒度 PAT）。";
 
-pub const LOGIN_CLIENT_ID_PLACEHOLDER: &str = "请输入 Client ID";
+pub const LOGIN_CLIENT_ID_PLACEHOLDER: &str = "请输入 OAuth Client ID";
 pub const LOGIN_PAT_BUTTON: &str = "使用 Personal Access Token 登录";
 pub const LOGIN_PAT_SUBMIT_ARROW: &str = "→";
 pub const LOGIN_PAT_BACK: &str = "←";
@@ -101,6 +101,8 @@ pub const STATUS_BAR_RATE_LIMIT: &str = "限流余量";
 pub const STATUS_BAR_SIGNED_OUT: &str = "未登录";
 pub const NOTICES_DISMISS: &str = "清除通知";
 
+pub const SETTINGS_TITLE: &str = "设置";
+pub const SETTINGS_GROUP_TITLE: &str = "网络";
 pub const SETTINGS_PROXY_LABEL: &str = "代理地址";
 pub const SETTINGS_PROXY_PLACEHOLDER: &str = "例如 http://127.0.0.1:7890";
 pub const SETTINGS_SAVE: &str = "保存";

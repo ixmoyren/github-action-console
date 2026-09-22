@@ -1,4 +1,6 @@
 use super::AppView;
+use super::settings::SettingsWindow;
+
 use super::*;
 
 impl AppView {
@@ -335,16 +337,11 @@ impl AppView {
         .detach();
     }
     pub(super) fn login_page(&self, state: AuthState, cx: &mut Context<Self>) -> AnyElement {
-        let settings_open = self.settings_open;
-        let (show_back, content) = if settings_open {
-            (false, self.settings_panel(cx))
-        } else {
-            match self.login_step {
-                LoginStep::Home => (false, self.login_home(cx)),
-                LoginStep::PatEntry => (true, self.pat_entry(cx)),
-                LoginStep::ClientIdEntry => (true, self.client_id_entry(cx)),
-                LoginStep::DeviceFlow => (true, self.device_flow_page(&state, cx)),
-            }
+        let (show_back, content) = match self.login_step {
+            LoginStep::Home => (false, self.login_home(cx)),
+            LoginStep::PatEntry => (true, self.pat_entry(cx)),
+            LoginStep::ClientIdEntry => (true, self.client_id_entry(cx)),
+            LoginStep::DeviceFlow => (true, self.device_flow_page(&state, cx)),
         };
 
         let back = if show_back {
@@ -353,7 +350,6 @@ impl AppView {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.login_step = LoginStep::Home;
                     this.flow_remaining_secs = None;
-                    this.settings_open = false;
                     if let AuthState::LoggedOut { notice } = &mut this.auth {
                         *notice = None;
                     }
@@ -364,13 +360,10 @@ impl AppView {
             div().into_any_element()
         };
 
-        let settings = if matches!(self.login_step, LoginStep::Home) && !settings_open {
+        let settings = if matches!(self.login_step, LoginStep::Home) {
             Button::new("open-settings")
                 .icon(IconName::Settings)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.settings_open = true;
-                    cx.notify();
-                }))
+                .on_click(cx.listener(|this, _, window, cx| this.open_settings_window(window, cx)))
                 .into_any_element()
         } else {
             div().into_any_element()
@@ -401,82 +394,64 @@ impl AppView {
             .into_any_element()
     }
 
-    /// The settings modal content: proxy address, save, close.
-    fn settings_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap_3()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .child(pickable(labels::SETTINGS_PROXY_LABEL))
-                    .child(Input::new(&self.proxy_input).w(px(360.0))),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_3()
-                    .child(
-                        Button::new("save-settings")
-                            .label(labels::SETTINGS_SAVE)
-                            .primary()
-                            .on_click(cx.listener(|this, _, _, cx| this.save_proxy(cx))),
-                    )
-                    .child(
-                        Button::new("close-settings")
-                            .label(labels::SETTINGS_CLOSE)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.settings_open = false;
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .into_any_element()
-    }
-
     /// Persist the proxy and point the gateway at it.
-    pub(super) fn save_proxy(&mut self, cx: &mut Context<Self>) {
-        let proxy = self.proxy_input.read(cx).value().to_string();
-        info!(proxy = %proxy.trim(), "saving the proxy setting");
+    /// Open the settings child window: borderless, centred on this window,
+    /// one third as wide and two fifths as tall.
+    pub(super) fn open_settings_window(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        // Zed's settings window uses gpui's standard additional-window size and
+        // lets the platform centre it; ours is half of that (900x750 -> 450x375).
+        let base = DEFAULT_ADDITIONAL_WINDOW_SIZE;
+        let size = Size {
+            width: base.width / 2.0,
+            height: base.height / 2.0,
+        };
+
+        let current = self.proxy_input.read(cx).value().to_string();
+        let initial_proxy = {
+            let trimmed = current.trim().to_owned();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        };
+
         let store = self.store.clone();
         let gateway = self.gateway.clone();
         let runtime = self.runtime.clone();
-        cx.spawn(async move |this, cx| {
-            let task = runtime.spawn({
-                let store = store.clone();
-                let gateway = gateway.clone();
-                let proxy = proxy.clone();
-                async move {
-                    let cleaned = proxy.trim().to_owned();
-                    let value = if cleaned.is_empty() {
-                        None
-                    } else {
-                        Some(cleaned)
-                    };
-                    if let Err(error) = store.save_proxy(value.as_deref()).await {
-                        warn!(%error, "could not persist the proxy setting");
-                    }
-                    gateway.set_proxy(value);
-                }
-            });
-            if let Err(error) = task.await {
-                warn!(%error, "a background task did not finish");
-            }
 
-            if let Err(error) = this.update(cx, |this, cx| {
-                this.settings_open = false;
-                cx.notify();
-            }) {
-                warn!(?error, "the view was gone before the update landed");
-            };
-        })
-        .detach();
+        let window_bounds = WindowBounds::centered(size, cx);
+
+        let opened = cx.open_window(
+            WindowOptions {
+                window_bounds: Some(window_bounds),
+                window_min_size: Some(Size {
+                    width: px(360.0),
+                    height: px(240.0),
+                }),
+                // Borderless: the window draws its own title bar.
+                titlebar: None,
+                is_resizable: false,
+                is_movable: true,
+                focus: true,
+                show: true,
+                app_id: Some("github-action-console".to_owned()),
+                window_background: WindowBackgroundAppearance::Opaque,
+                ..Default::default()
+            },
+            move |window, cx| {
+                Theme::sync_system_appearance(Some(window), cx);
+                let view = cx.new(|cx| {
+                    SettingsWindow::new(store, gateway, runtime, initial_proxy, window, cx)
+                });
+                cx.new(|cx| Root::new(view, window, cx))
+            },
+        );
+
+        match opened {
+            Ok(_) => info!("settings window opened"),
+            Err(error) => warn!(%error, "could not open the settings window"),
+        }
     }
 
     /// The signed-out landing page: exactly two entry buttons, side by side.

@@ -36,7 +36,7 @@ pub(crate) fn pickable(text: impl Into<gpui_kit::SharedString>) -> gpui_kit::bas
 }
 
 /// Restart the id sequence. Called once at the top of `render`.
-pub(super) fn reset_pickable_ids() {
+pub(crate) fn reset_pickable_ids() {
     PICKABLE_NEXT.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 

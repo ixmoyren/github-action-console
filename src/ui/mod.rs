@@ -16,6 +16,7 @@ mod launch;
 mod repositories;
 mod run_detail;
 mod session;
+mod settings;
 mod shell;
 mod status;
 mod workspace;
@@ -50,7 +51,7 @@ pub(super) use crate::labels;
 pub(super) use crate::runtime::TokioRuntime;
 pub(super) use crate::store::Store;
 
-pub(crate) use shell::{notice_text, pickable, problem_text};
+pub(crate) use shell::{notice_text, pickable, problem_text, reset_pickable_ids};
 
 const RUN_POLL_SECONDS: u64 = 10;
 
@@ -92,7 +93,6 @@ struct AppView {
     auth: AuthState,
     copied: bool,
     window_title: Option<String>,
-    settings_open: bool,
     proxy_input: Entity<InputState>,
     store: Store,
     flow_remaining_secs: Option<u64>,
@@ -194,7 +194,6 @@ impl AppView {
             auth: AuthState::LoggedOut { notice: None },
             copied: false,
             window_title: None,
-            settings_open: false,
             proxy_input,
             store,
             flow_remaining_secs: None,
