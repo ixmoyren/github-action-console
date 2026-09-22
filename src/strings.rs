@@ -24,3 +24,27 @@ pub const NOTICE_DENIED: &str = "授权已被拒绝。";
 pub const NOTICE_INVALID_CREDENTIALS: &str = "登录凭据已失效，请重新登录。";
 pub const NOTICE_NETWORK: &str = "网络请求失败，请检查网络后重试。";
 pub const NOTICE_UNEXPECTED: &str = "出现未预期的错误，请重试。";
+pub const NOTICE_MISSING_SCOPES: &str = "凭据权限不足。需要 repo + workflow（粗粒度 PAT），或 Contents: RW、Actions: RW、Workflows: RW（细粒度 PAT）。";
+
+pub const LOGIN_PAT_TITLE: &str = "或使用 Personal Access Token 登录";
+pub const LOGIN_PAT_PLACEHOLDER: &str = "粘贴 token";
+pub const LOGIN_PAT_SUBMIT: &str = "使用 token 登录";
+pub const LOGIN_VALIDATING: &str = "正在验证凭据…";
+
+pub const REPOSITORIES_TITLE: &str = "仓库";
+pub const REPOSITORIES_SEARCH_PLACEHOLDER: &str = "按名称搜索仓库";
+pub const REPOSITORIES_SORT_UPDATED: &str = "按最近更新";
+pub const REPOSITORIES_SORT_PUSHED: &str = "按最近推送";
+pub const REPOSITORIES_LOAD_MORE: &str = "加载更多";
+pub const REPOSITORIES_LOADING: &str = "正在加载仓库…";
+pub const REPOSITORIES_EMPTY: &str = "没有匹配的仓库。";
+pub const REPOSITORIES_PRIVATE: &str = "私有";
+pub const REPOSITORIES_PUBLIC: &str = "公开";
+
+pub const WORKSPACE_BACK: &str = "返回仓库列表";
+pub const WORKSPACE_WORKFLOWS: &str = "工作流";
+pub const WORKSPACE_RUNS: &str = "运行";
+pub const WORKSPACE_COMING_SOON: &str = "即将推出。";
+
+pub const PROBLEM_RATE_LIMITED: &str = "已触发 GitHub 限流，请稍后重试。";
+pub const PROBLEM_NOT_FOUND: &str = "该仓库不存在或无权访问。";

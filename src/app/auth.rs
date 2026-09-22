@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::credentials;
-use crate::github::{Account, DeviceFlowPoll, GatewayError, GitHubGateway};
+use crate::github::{Account, DeviceFlowPoll, GatewayError, GitHubGateway, SecretToken};
 use crate::store::Store;
 
 const DEFAULT_HOST: &str = "github.com";
@@ -13,6 +13,7 @@ pub enum AuthProblem {
     Expired,
     Denied,
     InvalidCredentials,
+    MissingScopes,
     Network,
     Unexpected,
 }
@@ -22,6 +23,7 @@ impl AuthProblem {
         match error {
             GatewayError::DeviceFlowUnavailable => Self::DeviceFlowUnavailable,
             GatewayError::Unauthorized => Self::InvalidCredentials,
+            GatewayError::Forbidden => Self::MissingScopes,
             GatewayError::Transport(_) => Self::Network,
             _ => Self::Unexpected,
         }
@@ -37,6 +39,7 @@ pub enum AuthState {
     AwaitingAuthorization {
         start: crate::github::DeviceFlowStart,
     },
+    ValidatingCredentials,
     Authenticated {
         account: Account,
     },
@@ -48,6 +51,7 @@ pub struct AuthManager {
     gateway: Arc<dyn GitHubGateway>,
     store: Store,
     state: AuthState,
+    token: Option<SecretToken>,
 }
 
 impl AuthManager {
@@ -56,11 +60,18 @@ impl AuthManager {
             gateway,
             store,
             state: AuthState::LoggedOut { notice: None },
+            token: None,
         }
     }
 
     pub fn state(&self) -> &AuthState {
         &self.state
+    }
+
+    /// The active credential, if any. Needed by callers that read from GitHub
+    /// on the user's behalf.
+    pub fn token(&self) -> Option<SecretToken> {
+        self.token.clone()
     }
 
     /// Try to resume a previous session from the keyring.
@@ -96,6 +107,7 @@ impl AuthManager {
         match self.gateway.current_user(&token).await {
             Ok(account) => {
                 let _ = self.store.save_account(&account, DEFAULT_HOST).await;
+                self.token = Some(token);
                 self.state = AuthState::Authenticated { account };
             }
             Err(error) => {
@@ -145,6 +157,7 @@ impl AuthManager {
                     Ok(account) => {
                         let _ = credentials::store_token(&account.login, &token);
                         let _ = self.store.save_account(&account, DEFAULT_HOST).await;
+                        self.token = Some(token);
                         self.state = AuthState::Authenticated { account };
                     }
                     Err(error) => {
@@ -162,11 +175,38 @@ impl AuthManager {
         }
     }
 
+    /// Fallback sign-in with a pasted Personal Access Token.
+    pub async fn sign_in_with_token(&mut self, raw_token: &str) {
+        let token = SecretToken::new(raw_token.trim().to_owned());
+        if token.expose().is_empty() {
+            self.state = AuthState::LoggedOut {
+                notice: Some(AuthProblem::InvalidCredentials),
+            };
+            return;
+        }
+
+        self.state = AuthState::ValidatingCredentials;
+        match self.gateway.current_user(&token).await {
+            Ok(account) => {
+                let _ = credentials::store_token(&account.login, &token);
+                let _ = self.store.save_account(&account, DEFAULT_HOST).await;
+                self.token = Some(token);
+                self.state = AuthState::Authenticated { account };
+            }
+            Err(error) => {
+                self.state = AuthState::LoggedOut {
+                    notice: Some(AuthProblem::from_gateway(&error)),
+                }
+            }
+        }
+    }
+
     pub async fn sign_out(&mut self) {
         if let Ok(Some(account)) = self.store.load_account().await {
             let _ = credentials::delete_token(&account.login);
         }
         let _ = self.store.clear_accounts().await;
+        self.token = None;
         self.state = AuthState::LoggedOut { notice: None };
     }
 }

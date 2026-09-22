@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError, GitHubGateway,
-    SecretToken,
+    Repository, RepositoryPage, RepositorySort, SecretToken,
 };
 
 const DEFAULT_BASE_URI: &str = "https://github.com";
@@ -102,15 +102,55 @@ impl GitHubGateway for OctocrabGateway {
     }
 
     async fn current_user(&self, token: &SecretToken) -> Result<Account, GatewayError> {
-        let crab = Octocrab::builder()
-            .user_access_token(token.expose().to_owned())
-            .build()
-            .map_err(unexpected)?;
+        let crab = user_client(token)?;
         let author = crab.current().user().await.map_err(map_error)?;
         Ok(Account {
             login: author.login,
         })
     }
+
+    async fn list_repositories(
+        &self,
+        token: &SecretToken,
+        sort: RepositorySort,
+        page: u32,
+        per_page: u32,
+    ) -> Result<RepositoryPage, GatewayError> {
+        let crab = user_client(token)?;
+        let page = crab
+            .current()
+            .list_repos_for_authenticated_user()
+            .visibility("all")
+            .affiliation("owner,collaborator,organization_member")
+            .type_("all")
+            .sort(sort.as_str())
+            .direction("desc")
+            .per_page(per_page.clamp(1, 100) as u8)
+            .page(page.clamp(1, 255) as u8)
+            .send()
+            .await
+            .map_err(map_error)?;
+
+        Ok(RepositoryPage {
+            repositories: page
+                .items
+                .into_iter()
+                .map(|repository| Repository {
+                    name: repository.name,
+                    full_name: repository.full_name.unwrap_or_default(),
+                    is_private: repository.private.unwrap_or(false),
+                })
+                .collect(),
+            has_more: page.next.is_some(),
+        })
+    }
+}
+
+fn user_client(token: &SecretToken) -> Result<Octocrab, GatewayError> {
+    Octocrab::builder()
+        .user_access_token(token.expose().to_owned())
+        .build()
+        .map_err(unexpected)
 }
 
 #[derive(Serialize)]

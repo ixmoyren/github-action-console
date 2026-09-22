@@ -66,6 +66,18 @@ impl GitHubGateway for FakeGateway {
             .pop_front()
             .unwrap_or(Err(GatewayError::Unexpected("no scripted user".to_owned())))
     }
+
+    async fn list_repositories(
+        &self,
+        _token: &SecretToken,
+        _sort: github_action_console::github::RepositorySort,
+        _page: u32,
+        _per_page: u32,
+    ) -> Result<github_action_console::github::RepositoryPage, GatewayError> {
+        Err(GatewayError::Unexpected(
+            "repository listing is not used in auth tests".to_owned(),
+        ))
+    }
 }
 
 fn device_start() -> DeviceFlowStart {
@@ -256,4 +268,84 @@ async fn sign_out_clears_token_and_account() {
 
     assert_eq!(*manager.state(), AuthState::LoggedOut { notice: None });
     assert_eq!(credentials::load_token("frank").unwrap(), None);
+}
+
+#[tokio::test]
+async fn pat_login_with_valid_token_authenticates() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_user(Ok(account("grace")));
+    let mut manager = manager(gateway).await;
+
+    manager.sign_in_with_token("  ghp_pasted_token  ").await;
+
+    assert_eq!(
+        *manager.state(),
+        AuthState::Authenticated {
+            account: account("grace")
+        }
+    );
+    assert_eq!(
+        credentials::load_token("grace").unwrap(),
+        Some(SecretToken::new("ghp_pasted_token"))
+    );
+    assert_eq!(
+        manager.token().unwrap(),
+        SecretToken::new("ghp_pasted_token")
+    );
+}
+
+#[tokio::test]
+async fn pat_login_without_scope_reports_missing_scopes() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_user(Err(GatewayError::Forbidden));
+    let mut manager = manager(gateway).await;
+
+    manager.sign_in_with_token("ghp_pasted_token").await;
+
+    assert_eq!(
+        *manager.state(),
+        AuthState::LoggedOut {
+            notice: Some(AuthProblem::MissingScopes)
+        }
+    );
+}
+
+#[tokio::test]
+async fn pat_login_with_blank_token_reports_invalid_credentials() {
+    let gateway = Arc::new(FakeGateway::default());
+    let mut manager = manager(gateway).await;
+
+    manager.sign_in_with_token("   ").await;
+
+    assert_eq!(
+        *manager.state(),
+        AuthState::LoggedOut {
+            notice: Some(AuthProblem::InvalidCredentials)
+        }
+    );
+}
+
+#[tokio::test]
+async fn pat_login_after_device_flow_unavailable_succeeds() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_start(Err(GatewayError::DeviceFlowUnavailable));
+    gateway.push_user(Ok(account("heidi")));
+    let mut manager = manager(gateway).await;
+
+    manager.start_device_flow().await;
+    assert_eq!(
+        *manager.state(),
+        AuthState::LoggedOut {
+            notice: Some(AuthProblem::DeviceFlowUnavailable)
+        }
+    );
+
+    manager.sign_in_with_token("ghp_pasted_token").await;
+
+    assert_eq!(
+        *manager.state(),
+        AuthState::Authenticated {
+            account: account("heidi")
+        }
+    );
 }

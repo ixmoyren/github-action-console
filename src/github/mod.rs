@@ -63,6 +63,55 @@ pub enum DeviceFlowPoll {
     Denied,
 }
 
+/// How repository listings are ordered by GitHub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepositorySort {
+    Updated,
+    Pushed,
+}
+
+impl RepositorySort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Updated => "updated",
+            Self::Pushed => "pushed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Repository {
+    pub name: String,
+    pub full_name: String,
+    pub is_private: bool,
+}
+
+impl Repository {
+    /// Case-insensitive match against the repository name or full name.
+    pub fn matches(&self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return true;
+        }
+        self.name.to_lowercase().contains(&query) || self.full_name.to_lowercase().contains(&query)
+    }
+}
+
+/// The single name filter shared by the picker and its view.
+pub fn filter_repositories(repositories: &[Repository], query: &str) -> Vec<Repository> {
+    repositories
+        .iter()
+        .filter(|repository| repository.matches(query))
+        .cloned()
+        .collect()
+}
+
+/// One page of repositories plus whether another page exists.#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RepositoryPage {
+    pub repositories: Vec<Repository>,
+    pub has_more: bool,
+}
+
 #[derive(Debug, Error)]
 pub enum GatewayError {
     #[error("device flow is not configured")]
@@ -92,4 +141,12 @@ pub trait GitHubGateway: Send + Sync {
     ) -> Result<DeviceFlowPoll, GatewayError>;
 
     async fn current_user(&self, token: &SecretToken) -> Result<Account, GatewayError>;
+
+    async fn list_repositories(
+        &self,
+        token: &SecretToken,
+        sort: RepositorySort,
+        page: u32,
+        per_page: u32,
+    ) -> Result<RepositoryPage, GatewayError>;
 }

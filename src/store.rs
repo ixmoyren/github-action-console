@@ -1,6 +1,7 @@
 use std::path::Path;
 
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::SqlitePool;
+use sqlx::sqlite::SqlitePoolOptions;
 use thiserror::Error;
 
 use crate::github::Account;
@@ -86,6 +87,35 @@ impl Store {
 
     pub async fn clear_accounts(&self) -> Result<(), StoreError> {
         sqlx::query("DELETE FROM account")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn save_preference(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO preference (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn load_preference(&self, key: &str) -> Result<Option<String>, StoreError> {
+        let value: Option<String> =
+            sqlx::query_scalar("SELECT value FROM preference WHERE key = ?")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(value)
+    }
+
+    pub async fn clear_preference(&self, key: &str) -> Result<(), StoreError> {
+        sqlx::query("DELETE FROM preference WHERE key = ?")
+            .bind(key)
             .execute(&self.pool)
             .await?;
         Ok(())
