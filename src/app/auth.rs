@@ -1,0 +1,172 @@
+use std::sync::Arc;
+
+use crate::credentials;
+use crate::github::{Account, DeviceFlowPoll, GatewayError, GitHubGateway};
+use crate::store::Store;
+
+const DEFAULT_HOST: &str = "github.com";
+
+/// Why the user is looking at the login page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthProblem {
+    DeviceFlowUnavailable,
+    Expired,
+    Denied,
+    InvalidCredentials,
+    Network,
+    Unexpected,
+}
+
+impl AuthProblem {
+    fn from_gateway(error: &GatewayError) -> Self {
+        match error {
+            GatewayError::DeviceFlowUnavailable => Self::DeviceFlowUnavailable,
+            GatewayError::Unauthorized => Self::InvalidCredentials,
+            GatewayError::Transport(_) => Self::Network,
+            _ => Self::Unexpected,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthState {
+    LoggedOut {
+        notice: Option<AuthProblem>,
+    },
+    StartingDeviceFlow,
+    AwaitingAuthorization {
+        start: crate::github::DeviceFlowStart,
+    },
+    Authenticated {
+        account: Account,
+    },
+}
+
+/// Owns the login state machine. Depends only on the gateway seam, the local
+/// store, and the OS keyring, so it is driveable without a UI or a network.
+pub struct AuthManager {
+    gateway: Arc<dyn GitHubGateway>,
+    store: Store,
+    state: AuthState,
+}
+
+impl AuthManager {
+    pub fn new(gateway: Arc<dyn GitHubGateway>, store: Store) -> Self {
+        Self {
+            gateway,
+            store,
+            state: AuthState::LoggedOut { notice: None },
+        }
+    }
+
+    pub fn state(&self) -> &AuthState {
+        &self.state
+    }
+
+    /// Try to resume a previous session from the keyring.
+    pub async fn restore_session(&mut self) {
+        let account = match self.store.load_account().await {
+            Ok(Some(account)) => account,
+            Ok(None) => {
+                self.state = AuthState::LoggedOut { notice: None };
+                return;
+            }
+            Err(_) => {
+                self.state = AuthState::LoggedOut {
+                    notice: Some(AuthProblem::Unexpected),
+                };
+                return;
+            }
+        };
+
+        let token = match credentials::load_token(&account.login) {
+            Ok(Some(token)) => token,
+            Ok(None) => {
+                self.state = AuthState::LoggedOut { notice: None };
+                return;
+            }
+            Err(_) => {
+                self.state = AuthState::LoggedOut {
+                    notice: Some(AuthProblem::Unexpected),
+                };
+                return;
+            }
+        };
+
+        match self.gateway.current_user(&token).await {
+            Ok(account) => {
+                let _ = self.store.save_account(&account, DEFAULT_HOST).await;
+                self.state = AuthState::Authenticated { account };
+            }
+            Err(error) => {
+                if matches!(error, GatewayError::Unauthorized) {
+                    let _ = credentials::delete_token(&account.login);
+                }
+                self.state = AuthState::LoggedOut {
+                    notice: Some(AuthProblem::from_gateway(&error)),
+                };
+            }
+        }
+    }
+
+    pub async fn start_device_flow(&mut self) {
+        self.state = AuthState::StartingDeviceFlow;
+        match self.gateway.start_device_flow().await {
+            Ok(start) => self.state = AuthState::AwaitingAuthorization { start },
+            Err(error) => {
+                self.state = AuthState::LoggedOut {
+                    notice: Some(AuthProblem::from_gateway(&error)),
+                }
+            }
+        }
+    }
+
+    /// One poll of the pending authorization. Callers own the cadence.
+    pub async fn poll_device_flow(&mut self) {
+        let AuthState::AwaitingAuthorization { start } = &self.state else {
+            return;
+        };
+        let handle = start.handle.clone();
+
+        match self.gateway.poll_device_flow(&handle).await {
+            Ok(DeviceFlowPoll::Pending) | Ok(DeviceFlowPoll::SlowDown) => {}
+            Ok(DeviceFlowPoll::Expired) => {
+                self.state = AuthState::LoggedOut {
+                    notice: Some(AuthProblem::Expired),
+                }
+            }
+            Ok(DeviceFlowPoll::Denied) => {
+                self.state = AuthState::LoggedOut {
+                    notice: Some(AuthProblem::Denied),
+                }
+            }
+            Ok(DeviceFlowPoll::Authorized(token)) => {
+                match self.gateway.current_user(&token).await {
+                    Ok(account) => {
+                        let _ = credentials::store_token(&account.login, &token);
+                        let _ = self.store.save_account(&account, DEFAULT_HOST).await;
+                        self.state = AuthState::Authenticated { account };
+                    }
+                    Err(error) => {
+                        self.state = AuthState::LoggedOut {
+                            notice: Some(AuthProblem::from_gateway(&error)),
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                self.state = AuthState::LoggedOut {
+                    notice: Some(AuthProblem::from_gateway(&error)),
+                }
+            }
+        }
+    }
+
+    pub async fn sign_out(&mut self) {
+        if let Ok(Some(account)) = self.store.load_account().await {
+            let _ = credentials::delete_token(&account.login);
+        }
+        let _ = self.store.clear_accounts().await;
+        self.state = AuthState::LoggedOut { notice: None };
+    }
+}
