@@ -14,14 +14,14 @@ use crate::app::{
 };
 use crate::app_info::AppInfo;
 use crate::github::GitHubGateway;
-use crate::github::octocrab_client::OctocrabGateway;
+use crate::github::client::OctocrabGateway;
 use crate::github::{
     Repository, RepositorySort, RunFilter, RunStatusFilter, Workflow, WorkflowRun,
     filter_repositories, filter_runs,
 };
+use crate::labels;
 use crate::runtime::TokioRuntime;
 use crate::store::Store;
-use crate::strings;
 
 const RUN_POLL_SECONDS: u64 = 10;
 
@@ -75,17 +75,17 @@ impl AppView {
         } = services;
         let pat_input = cx.new(|cx| {
             let mut state = InputState::new(window, cx);
-            state.set_placeholder(strings::LOGIN_PAT_PLACEHOLDER, window, cx);
+            state.set_placeholder(labels::LOGIN_PAT_PLACEHOLDER, window, cx);
             state
         });
         let search_input = cx.new(|cx| {
             let mut state = InputState::new(window, cx);
-            state.set_placeholder(strings::REPOSITORIES_SEARCH_PLACEHOLDER, window, cx);
+            state.set_placeholder(labels::REPOSITORIES_SEARCH_PLACEHOLDER, window, cx);
             state
         });
         let branch_input = cx.new(|cx| {
             let mut state = InputState::new(window, cx);
-            state.set_placeholder(strings::RUNS_BRANCH_PLACEHOLDER, window, cx);
+            state.set_placeholder(labels::RUNS_BRANCH_PLACEHOLDER, window, cx);
             state
         });
 
@@ -709,23 +709,23 @@ impl AppView {
 
 fn notice_text(problem: AuthProblem) -> &'static str {
     match problem {
-        AuthProblem::DeviceFlowUnavailable => strings::NOTICE_DEVICE_FLOW_UNAVAILABLE,
-        AuthProblem::Expired => strings::NOTICE_EXPIRED,
-        AuthProblem::Denied => strings::NOTICE_DENIED,
-        AuthProblem::InvalidCredentials => strings::NOTICE_INVALID_CREDENTIALS,
-        AuthProblem::MissingScopes => strings::NOTICE_MISSING_SCOPES,
-        AuthProblem::Network => strings::NOTICE_NETWORK,
-        AuthProblem::Unexpected => strings::NOTICE_UNEXPECTED,
+        AuthProblem::DeviceFlowUnavailable => labels::NOTICE_DEVICE_FLOW_UNAVAILABLE,
+        AuthProblem::Expired => labels::NOTICE_EXPIRED,
+        AuthProblem::Denied => labels::NOTICE_DENIED,
+        AuthProblem::InvalidCredentials => labels::NOTICE_INVALID_CREDENTIALS,
+        AuthProblem::MissingScopes => labels::NOTICE_MISSING_SCOPES,
+        AuthProblem::Network => labels::NOTICE_NETWORK,
+        AuthProblem::Unexpected => labels::NOTICE_UNEXPECTED,
     }
 }
 
 fn problem_text(problem: AppProblem) -> &'static str {
     match problem {
-        AppProblem::Forbidden => strings::NOTICE_MISSING_SCOPES,
-        AppProblem::RateLimited => strings::PROBLEM_RATE_LIMITED,
-        AppProblem::NotFound => strings::PROBLEM_NOT_FOUND,
-        AppProblem::Network => strings::NOTICE_NETWORK,
-        AppProblem::Unexpected => strings::NOTICE_UNEXPECTED,
+        AppProblem::Forbidden => labels::NOTICE_MISSING_SCOPES,
+        AppProblem::RateLimited => labels::PROBLEM_RATE_LIMITED,
+        AppProblem::NotFound => labels::PROBLEM_NOT_FOUND,
+        AppProblem::Network => labels::NOTICE_NETWORK,
+        AppProblem::Unexpected => labels::NOTICE_UNEXPECTED,
     }
 }
 
@@ -741,20 +741,20 @@ fn info_row(label: &'static str, value: &str) -> impl IntoElement {
 
 impl AppView {
     fn header(&self) -> impl IntoElement {
-        let packaging_config = self.info.packaging_config().unwrap_or(strings::UNSPECIFIED);
+        let packaging_config = self.info.packaging_config().unwrap_or(labels::UNSPECIFIED);
 
         div()
             .flex()
             .flex_col()
             .gap_1()
             .p_3()
-            .child(Label::new(strings::APP_TITLE))
-            .child(info_row(strings::LABEL_VERSION, self.info.version()))
+            .child(Label::new(labels::APP_TITLE))
+            .child(info_row(labels::LABEL_VERSION, self.info.version()))
             .child(info_row(
-                strings::LABEL_BUILD_TARGET,
+                labels::LABEL_BUILD_TARGET,
                 self.info.build_target(),
             ))
-            .child(info_row(strings::LABEL_PACKAGING_CONFIG, packaging_config))
+            .child(info_row(labels::LABEL_PACKAGING_CONFIG, packaging_config))
     }
 
     fn account_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -768,12 +768,12 @@ impl AppView {
                     .p_3()
                     .child(Label::new(format!(
                         "{}：{}",
-                        strings::LOGIN_LOGGED_IN_AS,
+                        labels::LOGIN_LOGGED_IN_AS,
                         account.login
                     )))
                     .child(
                         Button::new("sign-out")
-                            .label(strings::LOGIN_SIGN_OUT)
+                            .label(labels::LOGIN_SIGN_OUT)
                             .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx))),
                     )
                     .into_any_element(),
@@ -791,33 +791,33 @@ impl AppView {
                     .children(notice.map(|problem| Label::new(notice_text(problem)).text_sm()))
                     .child(
                         Button::new("start-login")
-                            .label(strings::LOGIN_START)
+                            .label(labels::LOGIN_START)
                             .primary()
                             .on_click(cx.listener(|this, _, _, cx| this.start_login(cx))),
                     );
             }
             AuthState::StartingDeviceFlow => {
-                panel = panel.child(Label::new(strings::LOGIN_STARTING));
+                panel = panel.child(Label::new(labels::LOGIN_STARTING));
             }
             AuthState::AwaitingAuthorization { start } => {
                 let code = start.user_code.clone();
                 let uri = start.verification_uri.clone();
                 panel = panel
-                    .child(Label::new(strings::LOGIN_INSTRUCTION))
+                    .child(Label::new(labels::LOGIN_INSTRUCTION))
                     .child(Label::new(start.verification_uri.clone()))
                     .child(Label::new(format!(
                         "{}：{}",
-                        strings::LOGIN_USER_CODE,
+                        labels::LOGIN_USER_CODE,
                         start.user_code
                     )))
                     .child(Label::new(format!(
                         "{}：{}",
-                        strings::LOGIN_EXPIRES_IN,
+                        labels::LOGIN_EXPIRES_IN,
                         start.expires_in_secs
                     )))
-                    .child(Label::new(strings::LOGIN_WAITING))
+                    .child(Label::new(labels::LOGIN_WAITING))
                     .child(Label::new(if self.copied {
-                        strings::LOGIN_COPIED
+                        labels::LOGIN_COPIED
                     } else {
                         ""
                     }))
@@ -826,20 +826,16 @@ impl AppView {
                             .flex()
                             .flex_row()
                             .gap_3()
-                            .child(
-                                Button::new("copy-code")
-                                    .label(strings::LOGIN_COPY)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            code.clone(),
-                                        ));
-                                        this.copied = true;
-                                        cx.notify();
-                                    })),
-                            )
+                            .child(Button::new("copy-code").label(labels::LOGIN_COPY).on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
+                                    this.copied = true;
+                                    cx.notify();
+                                }),
+                            ))
                             .child(
                                 Button::new("open-verification")
-                                    .label(strings::LOGIN_OPEN_BROWSER)
+                                    .label(labels::LOGIN_OPEN_BROWSER)
                                     .on_click(move |_, _, _| {
                                         let _ = open::that(uri.clone());
                                     }),
@@ -847,17 +843,17 @@ impl AppView {
                     );
             }
             AuthState::ValidatingCredentials => {
-                panel = panel.child(Label::new(strings::LOGIN_VALIDATING));
+                panel = panel.child(Label::new(labels::LOGIN_VALIDATING));
             }
             AuthState::Authenticated { .. } => {}
         }
 
         panel
-            .child(Label::new(strings::LOGIN_PAT_TITLE))
+            .child(Label::new(labels::LOGIN_PAT_TITLE))
             .child(Input::new(&self.pat_input))
             .child(
                 Button::new("submit-pat")
-                    .label(strings::LOGIN_PAT_SUBMIT)
+                    .label(labels::LOGIN_PAT_SUBMIT)
                     .on_click(cx.listener(|this, _, _, cx| this.submit_pat(cx))),
             )
             .into_any_element()
@@ -872,9 +868,9 @@ impl AppView {
             .map(|repository| {
                 let full_name = repository.full_name.clone();
                 let visibility = if repository.is_private {
-                    strings::REPOSITORIES_PRIVATE
+                    labels::REPOSITORIES_PRIVATE
                 } else {
-                    strings::REPOSITORIES_PUBLIC
+                    labels::REPOSITORIES_PUBLIC
                 };
                 Button::new(SharedString::from(format!("repo-{}", repository.full_name)))
                     .label(format!("{}（{}）", repository.full_name, visibility))
@@ -888,13 +884,13 @@ impl AppView {
 
         match self.repo_state {
             RepositoryListState::Loading if self.repos.is_empty() => {
-                list = list.child(Label::new(strings::REPOSITORIES_LOADING));
+                list = list.child(Label::new(labels::REPOSITORIES_LOADING));
             }
             RepositoryListState::Failed(problem) => {
                 list = list.child(Label::new(problem_text(problem)).text_sm());
             }
             RepositoryListState::Loaded if visible.is_empty() => {
-                list = list.child(Label::new(strings::REPOSITORIES_EMPTY));
+                list = list.child(Label::new(labels::REPOSITORIES_EMPTY));
             }
             _ => {}
         }
@@ -902,18 +898,17 @@ impl AppView {
         if self.repo_has_more {
             list = list.child(
                 Button::new("load-more")
-                    .label(strings::REPOSITORIES_LOAD_MORE)
+                    .label(labels::REPOSITORIES_LOAD_MORE)
                     .on_click(cx.listener(|this, _, _, cx| this.load_more(cx))),
             );
         }
 
         let updated_selected = self.repo_sort == RepositorySort::Updated;
-        let mut sort_updated =
-            Button::new("sort-updated").label(strings::REPOSITORIES_SORT_UPDATED);
+        let mut sort_updated = Button::new("sort-updated").label(labels::REPOSITORIES_SORT_UPDATED);
         if updated_selected {
             sort_updated = sort_updated.primary();
         }
-        let mut sort_pushed = Button::new("sort-pushed").label(strings::REPOSITORIES_SORT_PUSHED);
+        let mut sort_pushed = Button::new("sort-pushed").label(labels::REPOSITORIES_SORT_PUSHED);
         if !updated_selected {
             sort_pushed = sort_pushed.primary();
         }
@@ -934,7 +929,7 @@ impl AppView {
             .flex_col()
             .gap_3()
             .p_3()
-            .child(Label::new(strings::REPOSITORIES_TITLE))
+            .child(Label::new(labels::REPOSITORIES_TITLE))
             .child(Input::new(&self.search_input))
             .child(sort_row)
             .child(list)
@@ -942,11 +937,11 @@ impl AppView {
     }
 
     fn workspace_shell(&self, full_name: &str, cx: &mut Context<Self>) -> AnyElement {
-        let mut workflows_tab = Button::new("tab-workflows").label(strings::WORKSPACE_WORKFLOWS);
+        let mut workflows_tab = Button::new("tab-workflows").label(labels::WORKSPACE_WORKFLOWS);
         if self.workspace_tab == WorkspaceTab::Workflows {
             workflows_tab = workflows_tab.primary();
         }
-        let mut runs_tab = Button::new("tab-runs").label(strings::WORKSPACE_RUNS);
+        let mut runs_tab = Button::new("tab-runs").label(labels::WORKSPACE_RUNS);
         if self.workspace_tab == WorkspaceTab::Runs {
             runs_tab = runs_tab.primary();
         }
@@ -974,7 +969,7 @@ impl AppView {
             .p_3()
             .child(
                 Button::new("back-to-repos")
-                    .label(strings::WORKSPACE_BACK)
+                    .label(labels::WORKSPACE_BACK)
                     .on_click(cx.listener(|this, _, _, cx| this.leave_workspace(cx))),
             )
             .child(Label::new(full_name.to_owned()))
@@ -991,12 +986,12 @@ impl AppView {
         );
 
         match self.workflows_state {
-            LoadState::Loading => panel = panel.child(Label::new(strings::WORKFLOWS_LOADING)),
+            LoadState::Loading => panel = panel.child(Label::new(labels::WORKFLOWS_LOADING)),
             LoadState::Failed(problem) => {
                 panel = panel.child(Label::new(problem_text(problem)).text_sm())
             }
             LoadState::Loaded if self.workflows.is_empty() => {
-                panel = panel.child(Label::new(strings::WORKFLOWS_EMPTY))
+                panel = panel.child(Label::new(labels::WORKFLOWS_EMPTY))
             }
             _ => {}
         }
@@ -1020,7 +1015,7 @@ impl AppView {
             .child(
                 status_button(
                     "runs-status-all",
-                    strings::RUNS_FILTER_ALL,
+                    labels::RUNS_FILTER_ALL,
                     self.runs_status_filter == RunStatusFilter::All,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1031,7 +1026,7 @@ impl AppView {
             .child(
                 status_button(
                     "runs-status-running",
-                    strings::RUNS_FILTER_RUNNING,
+                    labels::RUNS_FILTER_RUNNING,
                     self.runs_status_filter == RunStatusFilter::Running,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1042,7 +1037,7 @@ impl AppView {
             .child(
                 status_button(
                     "runs-status-completed",
-                    strings::RUNS_FILTER_COMPLETED,
+                    labels::RUNS_FILTER_COMPLETED,
                     self.runs_status_filter == RunStatusFilter::Completed,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1054,7 +1049,7 @@ impl AppView {
         let mut workflow_buttons = vec![
             status_button(
                 "workflow-all",
-                strings::RUNS_FILTER_WORKFLOW_ALL,
+                labels::RUNS_FILTER_WORKFLOW_ALL,
                 self.runs_workflow_filter.is_none(),
             )
             .on_click(cx.listener(|this, _, _, cx| this.set_workflow_filter(None, cx)))
@@ -1099,17 +1094,17 @@ impl AppView {
                     run.name,
                     run.conclusion
                         .clone()
-                        .unwrap_or_else(|| strings::VALUE_MISSING.to_owned()),
+                        .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
                     run.branch
                         .clone()
-                        .unwrap_or_else(|| strings::VALUE_MISSING.to_owned()),
+                        .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
                     run.event,
                     run.actor
                         .clone()
-                        .unwrap_or_else(|| strings::VALUE_MISSING.to_owned()),
+                        .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
                     run.created_at
                         .clone()
-                        .unwrap_or_else(|| strings::VALUE_MISSING.to_owned()),
+                        .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
                 ))
             })
             .collect::<Vec<_>>();
@@ -1117,20 +1112,20 @@ impl AppView {
         let mut list = div().flex().flex_col().gap_1().children(rows);
         match self.runs_state {
             LoadState::Loading if self.runs.is_empty() => {
-                list = list.child(Label::new(strings::RUNS_LOADING));
+                list = list.child(Label::new(labels::RUNS_LOADING));
             }
             LoadState::Failed(problem) => {
                 list = list.child(Label::new(problem_text(problem)).text_sm());
             }
             LoadState::Loaded if visible.is_empty() => {
-                list = list.child(Label::new(strings::RUNS_EMPTY));
+                list = list.child(Label::new(labels::RUNS_EMPTY));
             }
             _ => {}
         }
         if self.runs_has_more {
             list = list.child(
                 Button::new("runs-load-more")
-                    .label(strings::RUNS_LOAD_MORE)
+                    .label(labels::RUNS_LOAD_MORE)
                     .on_click(cx.listener(|this, _, _, cx| this.load_more_runs(cx))),
             );
         }
@@ -1223,7 +1218,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             cx.open_window(
                 WindowOptions {
                     titlebar: Some(TitlebarOptions {
-                        title: Some(strings::APP_TITLE.into()),
+                        title: Some(labels::APP_TITLE.into()),
                         ..Default::default()
                     }),
                     ..Default::default()

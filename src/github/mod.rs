@@ -1,4 +1,4 @@
-pub mod octocrab_client;
+pub mod client;
 
 use async_trait::async_trait;
 use thiserror::Error;
