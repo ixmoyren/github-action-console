@@ -120,7 +120,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             init(cx);
-            let info = info.clone();
             let gateway = gateway.clone();
             let manager = manager.clone();
             let picker = picker.clone();
@@ -155,7 +154,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                             initial_proxy,
                             runtime,
                         };
-                        let view = cx.new(|cx| AppView::new(info, services, window, cx));
+                        let view = cx.new(|cx| AppView::new(services, window, cx));
                         view.update(cx, |this, cx| {
                             this.wire(cx);
                             this.restore(cx);

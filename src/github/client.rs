@@ -4,7 +4,6 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use super::{
-
     Account, BuildArtifact, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError,
     GitHubGateway, Job, RateLimit, Repository, RepositoryPage, RepositorySort, RunStatus,
     SecretToken, Step, Workflow, WorkflowRun, WorkflowRunPage,

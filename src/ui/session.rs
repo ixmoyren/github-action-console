@@ -334,30 +334,6 @@ impl AppView {
         })
         .detach();
     }
-    pub(super) fn account_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        match &self.auth {
-            AuthState::Authenticated { account } => Some(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .p_3()
-                    .child(pickable(format!(
-                        "{}：{}",
-                        labels::LOGIN_LOGGED_IN_AS,
-                        account.login
-                    )))
-                    .child(
-                        Button::new("sign-out")
-                            .label(labels::LOGIN_SIGN_OUT)
-                            .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx))),
-                    )
-                    .into_any_element(),
-            ),
-            _ => None,
-        }
-    }
     pub(super) fn login_page(&self, state: AuthState, cx: &mut Context<Self>) -> AnyElement {
         let settings_open = self.settings_open;
         let (show_back, content) = if settings_open {

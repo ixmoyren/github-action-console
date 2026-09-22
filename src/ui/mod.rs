@@ -84,7 +84,6 @@ struct Services {
 }
 
 struct AppView {
-    info: AppInfo,
     gateway: Arc<dyn GitHubGateway>,
     manager: Arc<Mutex<AuthManager>>,
     picker: Arc<Mutex<RepositoryList>>,
@@ -92,6 +91,7 @@ struct AppView {
     runtime: TokioRuntime,
     auth: AuthState,
     copied: bool,
+    window_title: Option<String>,
     settings_open: bool,
     proxy_input: Entity<InputState>,
     store: Store,
@@ -138,12 +138,7 @@ struct AppView {
 }
 
 impl AppView {
-    pub(super) fn new(
-        info: AppInfo,
-        services: Services,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub(super) fn new(services: Services, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let Services {
             gateway,
             manager,
@@ -191,7 +186,6 @@ impl AppView {
         });
 
         Self {
-            info,
             gateway,
             manager,
             picker,
@@ -199,6 +193,7 @@ impl AppView {
             runtime,
             auth: AuthState::LoggedOut { notice: None },
             copied: false,
+            window_title: None,
             settings_open: false,
             proxy_input,
             store,

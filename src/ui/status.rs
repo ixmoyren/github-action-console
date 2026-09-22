@@ -89,10 +89,6 @@ impl AppView {
         }
     }
     pub(super) fn status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let account = self
-            .status_account
-            .clone()
-            .unwrap_or_else(|| labels::STATUS_BAR_SIGNED_OUT.to_owned());
         let rate = match (self.status_remaining, self.status_reset_at.as_deref()) {
             (Some(remaining), Some(reset)) => {
                 format!(
@@ -102,9 +98,7 @@ impl AppView {
                     reset
                 )
             }
-            (Some(remaining), None) => {
-                format!("{}：{}", labels::STATUS_BAR_RATE_LIMIT, remaining)
-            }
+            (Some(remaining), None) => format!("{}：{}", labels::STATUS_BAR_RATE_LIMIT, remaining),
             _ => format!(
                 "{}：{}",
                 labels::STATUS_BAR_RATE_LIMIT,
@@ -132,18 +126,7 @@ impl AppView {
             .flex_col()
             .gap_1()
             .p_3()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_3()
-                    .child(pickable(format!(
-                        "{}：{}",
-                        labels::STATUS_BAR_ACCOUNT,
-                        account
-                    )))
-                    .child(pickable(rate)),
-            )
+            .child(Label::new(rate).text_sm())
             .child(notices)
             .into_any_element()
     }

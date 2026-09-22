@@ -24,34 +24,7 @@ pub(crate) fn problem_text(problem: AppProblem) -> &'static str {
     }
 }
 
-pub(super) fn info_row(label: &'static str, value: &str) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap_2()
-        .child(Label::new(label).text_sm())
-        .child(pickable(value.to_owned()))
-}
-
-impl AppView {
-    pub(super) fn header(&self) -> impl IntoElement {
-        let packaging_config = self.info.packaging_config().unwrap_or(labels::UNSPECIFIED);
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .p_3()
-            .child(pickable(labels::APP_TITLE))
-            .child(info_row(labels::LABEL_VERSION, self.info.version()))
-            .child(info_row(
-                labels::LABEL_BUILD_TARGET,
-                self.info.build_target(),
-            ))
-            .child(info_row(labels::LABEL_PACKAGING_CONFIG, packaging_config))
-    }
-}
+impl AppView {}
 
 /// Text the user can select and copy. IDs are handed out in render order, so
 /// they stay stable while a screen's element set is stable.
@@ -70,17 +43,39 @@ pub(super) fn reset_pickable_ids() {
 static PICKABLE_NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         reset_pickable_ids();
-        let signed_in = matches!(self.auth, AuthState::Authenticated { .. });
 
-        // Signed out: only the login view, centred, with no app chrome.
-        if !signed_in {
+        // The window title carries the signed-in user; the app chrome no longer
+        // repeats it anywhere on screen.
+        let title = match &self.auth {
+            AuthState::Authenticated { account } => {
+                format!("{} ~ {}", labels::APP_TITLE, account.login)
+            }
+            _ => labels::APP_TITLE.to_owned(),
+        };
+        if self.window_title.as_deref() != Some(title.as_str()) {
+            window.set_window_title(&title);
+            self.window_title = Some(title);
+        }
+
+        if !matches!(self.auth, AuthState::Authenticated { .. }) {
             return self.login_page(self.auth.clone(), cx);
         }
 
-        let header = self.header();
-        let account_row = self.account_row(cx);
+        let top_bar = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .p_3()
+            .child(div())
+            .child(
+                Button::new("sign-out")
+                    .label(labels::LOGIN_SIGN_OUT)
+                    .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx))),
+            );
+
         let content = match self.selected.clone() {
             Some(full_name) => self.workspace_shell(&full_name, cx),
             None => self.repository_picker(cx),
@@ -90,8 +85,7 @@ impl Render for AppView {
             .size_full()
             .flex()
             .flex_col()
-            .child(header)
-            .children(account_row)
+            .child(top_bar)
             .child(
                 div()
                     .flex_1()
