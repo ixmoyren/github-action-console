@@ -1,3 +1,3 @@
 fn main() {
-    println!("Hello, world!");
+    github_action_console::ui::run();
 }

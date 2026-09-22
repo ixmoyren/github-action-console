@@ -3,4 +3,13 @@ name = "github-action-console"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "github_action_console"
+path = "src/lib.rs"
+
+[[bin]]
+name = "github-action-console"
+path = "src/main.rs"
+
 [dependencies]
+gpui-kit = "0.6"
