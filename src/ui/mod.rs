@@ -45,8 +45,8 @@ pub(super) use crate::app_info::AppInfo;
 pub(super) use crate::github::GitHubGateway;
 pub(super) use crate::github::client::OctocrabGateway;
 pub(super) use crate::github::{
-    BuildArtifact, CommitSummary, Job, Repository, RepositorySort, RunFilter, RunStatusFilter,
-    Workflow, WorkflowRun, filter_log_lines, filter_repositories, filter_runs,
+    BuildArtifact, CommitSummary, Job, Repository, RunFilter, RunStatusFilter, Workflow,
+    WorkflowRun, filter_log_lines, filter_repositories, filter_runs,
 };
 pub(super) use crate::labels;
 pub(super) use crate::runtime::TokioRuntime;
@@ -109,7 +109,6 @@ struct AppView {
     repos: Vec<Repository>,
     repo_state: RepositoryListState,
     repo_has_more: bool,
-    repo_sort: RepositorySort,
     selected: Option<String>,
     workflows: Vec<Workflow>,
     workflows_state: LoadState,
@@ -196,6 +195,9 @@ impl AppView {
                 window,
                 cx,
             )
+            .row_selectable(true)
+            .col_resizable(true)
+            .sortable(true)
         });
 
         Self {
@@ -222,7 +224,6 @@ impl AppView {
             repos: Vec::new(),
             repo_state: RepositoryListState::Idle,
             repo_has_more: false,
-            repo_sort: RepositorySort::Updated,
             selected: None,
             workflows: Vec::new(),
             workflows_state: LoadState::Idle,

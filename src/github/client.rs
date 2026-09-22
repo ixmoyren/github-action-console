@@ -134,21 +134,22 @@ impl GitHubGateway for OctocrabGateway {
         // extra request for its default branch's newest commit. They run
         // together; a single failure only blanks that row's commit columns.
         let has_more = page.next.is_some();
-        let repositories = futures::future::join_all(page.items.into_iter().map(|repository| {
-            let crab = crab.clone();
-            async move {
-                let full_name = repository.full_name.unwrap_or_default();
-                let latest_commit = latest_commit(&crab, &full_name).await;
-                Repository {
-                    name: repository.name,
-                    full_name,
-                    is_private: repository.private.unwrap_or(false),
-                    default_branch: repository.default_branch,
-                    latest_commit,
+        let repositories =
+            futures_util::future::join_all(page.items.into_iter().map(|repository| {
+                let crab = crab.clone();
+                async move {
+                    let full_name = repository.full_name.unwrap_or_default();
+                    let latest_commit = latest_commit(&crab, &full_name).await;
+                    Repository {
+                        name: repository.name,
+                        full_name,
+                        is_private: repository.private.unwrap_or(false),
+                        default_branch: repository.default_branch,
+                        latest_commit,
+                    }
                 }
-            }
-        }))
-        .await;
+            }))
+            .await;
 
         Ok(RepositoryPage {
             repositories,

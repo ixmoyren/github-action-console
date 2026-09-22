@@ -32,13 +32,12 @@ impl AppView {
         this: &WeakEntity<AppView>,
         cx: &mut AsyncApp,
     ) {
-        let (state, repos, has_more, sort, selected) = {
+        let (state, repos, has_more, selected) = {
             let guard = picker.lock().await;
             (
                 guard.state(),
                 guard.visible(),
                 guard.has_more(),
-                guard.sort(),
                 guard.selected().map(str::to_owned),
             )
         };
@@ -47,7 +46,6 @@ impl AppView {
             this.repo_state = state;
             this.repos = repos;
             this.repo_has_more = has_more;
-            this.repo_sort = sort;
             this.selected = selected;
             this.refresh_repo_table(cx);
             cx.notify();

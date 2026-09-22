@@ -1,7 +1,7 @@
 use super::AppView;
 
 use gpui_kit::component::Sizable as _;
-use gpui_kit::component::table::{DataTable, TableDelegate, TableState};
+use gpui_kit::component::table::{ColumnSort, DataTable, TableDelegate, TableState};
 
 use super::*;
 
@@ -25,19 +25,27 @@ impl RepositoryTableDelegate {
             view,
             repositories: Vec::new(),
             columns: vec![
-                Column::new(REPO_COLUMN_NAME, labels::REPOSITORIES_COLUMN_NAME).width(280.),
+                Column::new(REPO_COLUMN_NAME, labels::REPOSITORIES_COLUMN_NAME)
+                    .width(280.)
+                    .sortable(),
                 Column::new(
                     REPO_COLUMN_VISIBILITY,
                     labels::REPOSITORIES_COLUMN_VISIBILITY,
                 )
-                .width(90.),
-                Column::new(REPO_COLUMN_BRANCH, labels::REPOSITORIES_COLUMN_BRANCH).width(150.),
-                Column::new(REPO_COLUMN_COMMIT, labels::REPOSITORIES_COLUMN_COMMIT).width(360.),
+                .width(90.)
+                .sortable(),
+                Column::new(REPO_COLUMN_BRANCH, labels::REPOSITORIES_COLUMN_BRANCH)
+                    .width(150.)
+                    .sortable(),
+                Column::new(REPO_COLUMN_COMMIT, labels::REPOSITORIES_COLUMN_COMMIT)
+                    .width(360.)
+                    .sortable(),
                 Column::new(
                     REPO_COLUMN_COMMIT_DATE,
                     labels::REPOSITORIES_COLUMN_COMMIT_DATE,
                 )
-                .width(170.),
+                .width(170.)
+                .sortable(),
             ],
         }
     }
@@ -58,6 +66,25 @@ impl TableDelegate for RepositoryTableDelegate {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         self.columns[col_ix].clone()
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) {
+        let Some(key) = self.columns.get(col_ix).map(|column| column.key.clone()) else {
+            return;
+        };
+        self.repositories.sort_by(|a, b| {
+            let order = sort_key(a, key.as_ref()).cmp(&sort_key(b, key.as_ref()));
+            match sort {
+                ColumnSort::Descending => order.reverse(),
+                _ => order,
+            }
+        });
     }
 
     fn render_td(
@@ -114,6 +141,27 @@ impl TableDelegate for RepositoryTableDelegate {
             .into_any_element(),
             _ => div().into_any_element(),
         }
+    }
+}
+
+/// The text a column sorts by. Missing values sort first, matching an empty string.
+fn sort_key(repository: &Repository, column: &str) -> String {
+    match column {
+        REPO_COLUMN_NAME => repository.full_name.to_lowercase(),
+        REPO_COLUMN_VISIBILITY => if repository.is_private {
+            labels::REPOSITORIES_PRIVATE
+        } else {
+            labels::REPOSITORIES_PUBLIC
+        }
+        .to_owned(),
+        REPO_COLUMN_BRANCH => repository.default_branch.clone().unwrap_or_default(),
+        REPO_COLUMN_COMMIT => commit_message(repository.latest_commit.as_ref()),
+        REPO_COLUMN_COMMIT_DATE => repository
+            .latest_commit
+            .as_ref()
+            .and_then(|commit| commit.committed_at.clone())
+            .unwrap_or_default(),
+        _ => String::new(),
     }
 }
 
@@ -233,32 +281,6 @@ impl AppView {
         })
         .detach();
     }
-    pub(super) fn change_sort(&mut self, sort: RepositorySort, cx: &mut Context<Self>) {
-        let manager = self.manager.clone();
-        let picker = self.picker.clone();
-        let runtime = self.runtime.clone();
-        cx.spawn(async move |this, cx| {
-            let token = { manager.lock().await.token() };
-            let Some(token) = token else {
-                return;
-            };
-
-            let task = runtime.spawn({
-                let picker = picker.clone();
-                async move {
-                    let mut guard = picker.lock().await;
-                    guard.set_sort(sort);
-                    guard.reload(&token).await;
-                }
-            });
-            if let Err(error) = task.await {
-                warn!(%error, "a background task did not finish");
-            }
-
-            Self::refresh_picker(&picker, &this, cx).await;
-        })
-        .detach();
-    }
     /// Recompute the table's rows from the loaded repositories and the current
     /// name filter. Called whenever either changes.
     pub(super) fn refresh_repo_table(&mut self, cx: &mut Context<Self>) {
@@ -295,32 +317,25 @@ impl AppView {
 
         if self.repo_has_more {
             list = list.child(
-                Button::new("load-more")
-                    .label(labels::REPOSITORIES_LOAD_MORE)
-                    .on_click(cx.listener(|this, _, _, cx| this.load_more(cx))),
+                div().flex().flex_row().justify_end().child(
+                    Button::new("load-more")
+                        .label(labels::REPOSITORIES_LOAD_MORE)
+                        .on_click(cx.listener(|this, _, _, cx| this.load_more(cx))),
+                ),
             );
         }
 
-        let updated_selected = self.repo_sort == RepositorySort::Updated;
-        let mut sort_updated = Button::new("sort-updated").label(labels::REPOSITORIES_SORT_UPDATED);
-        if updated_selected {
-            sort_updated = sort_updated.primary();
-        }
-        let mut sort_pushed = Button::new("sort-pushed").label(labels::REPOSITORIES_SORT_PUSHED);
-        if !updated_selected {
-            sort_pushed = sort_pushed.primary();
-        }
+        let search = div()
+            .w(relative(1. / 3.))
+            .child(Input::new(&self.search_input));
 
-        let sort_row = div()
+        let header = div()
             .flex()
             .flex_row()
-            .gap_2()
-            .child(sort_updated.on_click(
-                cx.listener(|this, _, _, cx| this.change_sort(RepositorySort::Updated, cx)),
-            ))
-            .child(sort_pushed.on_click(
-                cx.listener(|this, _, _, cx| this.change_sort(RepositorySort::Pushed, cx)),
-            ));
+            .items_center()
+            .justify_between()
+            .child(pickable(labels::REPOSITORIES_TITLE))
+            .child(search);
 
         div()
             .flex()
@@ -328,9 +343,7 @@ impl AppView {
             .gap_3()
             .p_3()
             .size_full()
-            .child(pickable(labels::REPOSITORIES_TITLE))
-            .child(Input::new(&self.search_input))
-            .child(sort_row)
+            .child(header)
             .child(list)
             .into_any_element()
     }
