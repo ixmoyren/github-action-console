@@ -73,13 +73,30 @@ impl Render for AppView {
                 .into_any_element();
         }
 
+        let leading = match self.selected.clone() {
+            Some(full_name) => div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    Button::new("back-to-repos")
+                        .label(labels::WORKSPACE_BACK_ARROW)
+                        .tooltip(labels::WORKSPACE_BACK)
+                        .on_click(cx.listener(|this, _, _, cx| this.leave_workspace(cx))),
+                )
+                .child(pickable(full_name))
+                .into_any_element(),
+            None => div().into_any_element(),
+        };
+
         let top_bar = div()
             .flex()
             .flex_row()
             .items_center()
             .justify_between()
             .p_3()
-            .child(div())
+            .child(leading)
             .child(
                 Button::new("sign-out")
                     .label(labels::LOGIN_SIGN_OUT)
@@ -87,7 +104,7 @@ impl Render for AppView {
             );
 
         let content = match self.selected.clone() {
-            Some(full_name) => self.workspace_shell(&full_name, cx),
+            Some(_) => self.workspace_shell(cx),
             None => self.repository_picker(cx),
         };
 

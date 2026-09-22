@@ -224,7 +224,7 @@ impl AppView {
         })
         .detach();
     }
-    pub(super) fn workspace_shell(&self, full_name: &str, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn workspace_shell(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut workflows_tab = Button::new("tab-workflows").label(labels::WORKSPACE_WORKFLOWS);
         if self.workspace_tab == WorkspaceTab::Workflows {
             workflows_tab = workflows_tab.primary();
@@ -255,12 +255,6 @@ impl AppView {
             .flex_col()
             .gap_3()
             .p_3()
-            .child(
-                Button::new("back-to-repos")
-                    .label(labels::WORKSPACE_BACK)
-                    .on_click(cx.listener(|this, _, _, cx| this.leave_workspace(cx))),
-            )
-            .child(pickable(full_name.to_owned()))
             .child(tabs)
             .child(content)
             .into_any_element()

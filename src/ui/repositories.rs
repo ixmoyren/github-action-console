@@ -175,11 +175,17 @@ fn commit_message(commit: Option<&CommitSummary>) -> String {
 
 fn commit_date(committed_at: Option<&str>) -> String {
     match committed_at {
-        Some(raw) => chrono::DateTime::parse_from_rfc3339(raw)
-            .map(|date| date.format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_else(|_| raw.to_owned()),
+        Some(raw) => format_commit_date(raw),
         None => labels::VALUE_MISSING.to_owned(),
     }
+}
+
+/// Render an RFC3339 timestamp as a short local-looking date, falling back to
+/// the raw value when it cannot be parsed.
+pub(super) fn format_commit_date(raw: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .map(|date| date.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|_| raw.to_owned())
 }
 
 impl AppView {

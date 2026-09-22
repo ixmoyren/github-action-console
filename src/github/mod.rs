@@ -83,6 +83,8 @@ impl RepositorySort {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitSummary {
     pub message: String,
+    pub sha: String,
+    pub author: Option<String>,
     pub committed_at: Option<String>,
 }
 

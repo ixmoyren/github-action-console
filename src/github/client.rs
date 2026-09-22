@@ -387,8 +387,15 @@ async fn latest_commit(crab: &Octocrab, full_name: &str) -> Option<CommitSummary
             .and_then(|author| author.date)
             .or_else(|| commit.commit.committer.as_ref().and_then(|c| c.date))
             .map(|date| date.to_rfc3339());
+        let author = commit
+            .commit
+            .author
+            .as_ref()
+            .map(|author| author.name.clone());
         CommitSummary {
             message: commit.commit.message,
+            sha: commit.sha,
+            author,
             committed_at,
         }
     })

@@ -112,6 +112,10 @@ impl AppView {
 
         let mut bar = StatusBar::new().right(rate);
 
+        if let Some(location) = self.workspace_location() {
+            bar = bar.left(location);
+        }
+
         if let Some(problem) = self.current_failure() {
             bar = bar.child(Label::new(crate::app::notice_for(problem).text).text_sm());
         }
@@ -129,5 +133,44 @@ impl AppView {
         }
 
         bar.into_any_element()
+    }
+
+    /// The selected repository's branch, short commit, and blame line, shown at
+    /// the left of the status bar while a workspace is open.
+    fn workspace_location(&self) -> Option<String> {
+        let full_name = self.selected.as_deref()?;
+        let repository = self
+            .repos
+            .iter()
+            .find(|repository| repository.full_name == full_name)?;
+
+        let branch = repository
+            .default_branch
+            .clone()
+            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned());
+        let commit = repository.latest_commit.as_ref();
+        let sha = commit
+            .map(|commit| short_sha(&commit.sha))
+            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned());
+        let blame = commit
+            .map(blame_text)
+            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned());
+
+        Some(format!("{branch} · {sha} · {blame}"))
+    }
+}
+
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(7).collect()
+}
+
+fn blame_text(commit: &CommitSummary) -> String {
+    let author = commit
+        .author
+        .clone()
+        .unwrap_or_else(|| labels::VALUE_MISSING.to_owned());
+    match commit.committed_at.as_deref() {
+        Some(date) => format!("{author} {}", super::repositories::format_commit_date(date)),
+        None => author,
     }
 }
