@@ -57,60 +57,71 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = TokioRuntime::new()?;
     let store = runtime.block_on(Store::open(default_store_path()?))?;
     let gateway: Arc<dyn GitHubGateway> = Arc::new(OctocrabGateway::new());
+    let initial_proxy = runtime.block_on(store.load_proxy()).ok().flatten();
+    if let Some(proxy) = &initial_proxy {
+        gateway.set_proxy(Some(proxy.clone()));
+    }
     let manager = Arc::new(Mutex::new(AuthManager::new(gateway.clone(), store.clone())));
-    let picker = Arc::new(Mutex::new(RepositoryList::new(gateway.clone(), store)));
+    let picker = Arc::new(Mutex::new(RepositoryList::new(
+        gateway.clone(),
+        store.clone(),
+    )));
     let workspace = Arc::new(Mutex::new(Workspace::new()));
     let detail = Arc::new(Mutex::new(RunDetail::new()));
     let downloads = Arc::new(Mutex::new(Downloads::new(default_download_dir()?)));
     let status = Arc::new(Mutex::new(Status::new()));
 
-    application().run(move |cx| {
-        init(cx);
-        let info = info.clone();
-        let gateway = gateway.clone();
-        let manager = manager.clone();
-        let picker = picker.clone();
-        let workspace = workspace.clone();
-        let detail = detail.clone();
-        let downloads = downloads.clone();
-        let status = status.clone();
-        let runtime = runtime.clone();
+    application()
+        .with_assets(gpui_kit::assets::AllAssets)
+        .run(move |cx| {
+            init(cx);
+            let info = info.clone();
+            let gateway = gateway.clone();
+            let manager = manager.clone();
+            let picker = picker.clone();
+            let workspace = workspace.clone();
+            let detail = detail.clone();
+            let downloads = downloads.clone();
+            let status = status.clone();
+            let runtime = runtime.clone();
 
-        cx.spawn(async move |cx| {
-            let window_bounds = centered_window_bounds(cx);
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(window_bounds),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some(labels::APP_TITLE.into()),
+            cx.spawn(async move |cx| {
+                let window_bounds = centered_window_bounds(cx);
+                cx.open_window(
+                    WindowOptions {
+                        window_bounds: Some(window_bounds),
+                        titlebar: Some(TitlebarOptions {
+                            title: Some(labels::APP_TITLE.into()),
+                            ..Default::default()
+                        }),
                         ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                move |window, cx| {
-                    Theme::sync_system_appearance(Some(window), cx);
-                    let services = Services {
-                        gateway,
-                        manager,
-                        picker,
-                        workspace,
-                        detail,
-                        downloads,
-                        status,
-                        runtime,
-                    };
-                    let view = cx.new(|cx| AppView::new(info, services, window, cx));
-                    view.update(cx, |this, cx| {
-                        this.wire(cx);
-                        this.restore(cx);
-                    });
-                    cx.new(|cx| Root::new(view, window, cx))
-                },
-            )
-            .expect("failed to open window");
-        })
-        .detach();
-    });
+                    },
+                    move |window, cx| {
+                        Theme::sync_system_appearance(Some(window), cx);
+                        let services = Services {
+                            gateway,
+                            manager,
+                            picker,
+                            workspace,
+                            detail,
+                            downloads,
+                            status,
+                            store,
+                            initial_proxy,
+                            runtime,
+                        };
+                        let view = cx.new(|cx| AppView::new(info, services, window, cx));
+                        view.update(cx, |this, cx| {
+                            this.wire(cx);
+                            this.restore(cx);
+                        });
+                        cx.new(|cx| Root::new(view, window, cx))
+                    },
+                )
+                .expect("failed to open window");
+            })
+            .detach();
+        });
 
     Ok(())
 }

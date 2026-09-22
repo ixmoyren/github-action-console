@@ -305,6 +305,22 @@ impl GitHubGateway for OctocrabGateway {
         Ok(bytes.to_vec())
     }
 
+    fn set_proxy(&self, proxy: Option<String>) {
+        for key in PROXY_ENV_KEYS {
+            match proxy
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                // SAFETY: the console only writes these once per save, and every
+                // request builds its own client, so the read happens either
+                // before or after the write.
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+    }
+
     async fn rate_limit(&self, token: &SecretToken) -> Result<RateLimit, GatewayError> {
         let crab = user_client(token)?;
         let limits = crab.ratelimit().get().await.map_err(map_error)?;
@@ -318,6 +334,11 @@ impl GitHubGateway for OctocrabGateway {
         })
     }
 }
+
+/// reqwest (and therefore octocrab) picks up proxies from the environment, so
+/// the setting is applied there. Every call builds a fresh client, which is
+/// what makes a change take effect without a restart.
+const PROXY_ENV_KEYS: [&str; 3] = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"];
 
 fn user_client(token: &SecretToken) -> Result<Octocrab, GatewayError> {
     Octocrab::builder()

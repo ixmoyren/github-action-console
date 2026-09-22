@@ -15,6 +15,8 @@ pub enum StoreError {
 /// Local SQLite storage. Holds account metadata and preferences only —
 /// tokens live in the OS keyring, and release definitions live in the repo
 /// manifest (ADR-0003).
+const PROXY_PREFERENCE: &str = "network.proxy";
+
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
@@ -111,6 +113,18 @@ impl Store {
                 .fetch_optional(&self.pool)
                 .await?;
         Ok(value)
+    }
+
+    /// The proxy every GitHub request should go through, if one is set.
+    pub async fn save_proxy(&self, proxy: Option<&str>) -> Result<(), StoreError> {
+        match proxy.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(value) => self.save_preference(PROXY_PREFERENCE, value).await,
+            None => self.clear_preference(PROXY_PREFERENCE).await,
+        }
+    }
+
+    pub async fn load_proxy(&self) -> Result<Option<String>, StoreError> {
+        self.load_preference(PROXY_PREFERENCE).await
     }
 
     pub async fn clear_preference(&self, key: &str) -> Result<(), StoreError> {

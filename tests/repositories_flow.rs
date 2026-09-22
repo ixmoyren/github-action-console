@@ -129,6 +129,8 @@ impl GitHubGateway for FakeGateway {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
 
+    fn set_proxy(&self, _proxy: Option<String>) {}
+
     async fn rate_limit(
         &self,
         _token: &SecretToken,
@@ -331,4 +333,23 @@ async fn selection_is_remembered_across_instances() {
 
     second.leave_workspace().await;
     assert_eq!(second.selected(), None);
+}
+
+#[tokio::test]
+async fn the_proxy_setting_round_trips_through_the_store() {
+    let store = Store::in_memory().await.unwrap();
+
+    assert_eq!(store.load_proxy().await.unwrap(), None);
+
+    store
+        .save_proxy(Some("  http://127.0.0.1:7890  "))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.load_proxy().await.unwrap(),
+        Some("http://127.0.0.1:7890".to_owned())
+    );
+
+    store.save_proxy(Some("   ")).await.unwrap();
+    assert_eq!(store.load_proxy().await.unwrap(), None);
 }

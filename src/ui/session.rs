@@ -316,39 +316,141 @@ impl AppView {
         }
     }
     pub(super) fn login_page(&self, state: AuthState, cx: &mut Context<Self>) -> AnyElement {
-        let (show_back, content) = match self.login_step {
-            LoginStep::Home => (false, self.login_home(cx)),
-            LoginStep::PatEntry => (true, self.pat_entry(cx)),
-            LoginStep::ClientIdEntry => (true, self.client_id_entry(cx)),
-            LoginStep::DeviceFlow => (true, self.device_flow_page(&state, cx)),
+        let settings_open = self.settings_open;
+        let (show_back, content) = if settings_open {
+            (false, self.settings_panel(cx))
+        } else {
+            match self.login_step {
+                LoginStep::Home => (false, self.login_home(cx)),
+                LoginStep::PatEntry => (true, self.pat_entry(cx)),
+                LoginStep::ClientIdEntry => (true, self.client_id_entry(cx)),
+                LoginStep::DeviceFlow => (true, self.device_flow_page(&state, cx)),
+            }
         };
 
-        let mut page = div().size_full().flex().flex_col();
-        if show_back {
-            page = page.child(
-                div().flex().flex_row().p_3().child(
-                    Button::new("back-to-login-home")
-                        .label(labels::LOGIN_PAT_BACK)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.login_step = LoginStep::Home;
-                            if let AuthState::LoggedOut { notice } = &mut this.auth {
-                                *notice = None;
-                            }
-                            cx.notify();
-                        })),
-                ),
-            );
-        }
+        let back = if show_back {
+            Button::new("back-to-login-home")
+                .label(labels::LOGIN_PAT_BACK)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.login_step = LoginStep::Home;
+                    this.flow_remaining_secs = None;
+                    this.settings_open = false;
+                    if let AuthState::LoggedOut { notice } = &mut this.auth {
+                        *notice = None;
+                    }
+                    cx.notify();
+                }))
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
 
-        page.child(
-            div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(content),
-        )
-        .into_any_element()
+        let settings = if matches!(self.login_step, LoginStep::Home) && !settings_open {
+            Button::new("open-settings")
+                .icon(IconName::Settings)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.settings_open = true;
+                    cx.notify();
+                }))
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .p_3()
+                    .child(back)
+                    .child(settings),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(content),
+            )
+            .into_any_element()
+    }
+
+    /// The settings modal content: proxy address, save, close.
+    fn settings_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(pickable(labels::SETTINGS_PROXY_LABEL))
+                    .child(Input::new(&self.proxy_input).w(px(360.0))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_3()
+                    .child(
+                        Button::new("save-settings")
+                            .label(labels::SETTINGS_SAVE)
+                            .primary()
+                            .on_click(cx.listener(|this, _, _, cx| this.save_proxy(cx))),
+                    )
+                    .child(
+                        Button::new("close-settings")
+                            .label(labels::SETTINGS_CLOSE)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings_open = false;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// Persist the proxy and point the gateway at it.
+    pub(super) fn save_proxy(&mut self, cx: &mut Context<Self>) {
+        let proxy = self.proxy_input.read(cx).value().to_string();
+        let store = self.store.clone();
+        let gateway = self.gateway.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let task = runtime.spawn({
+                let store = store.clone();
+                let gateway = gateway.clone();
+                let proxy = proxy.clone();
+                async move {
+                    let cleaned = proxy.trim().to_owned();
+                    let value = if cleaned.is_empty() {
+                        None
+                    } else {
+                        Some(cleaned)
+                    };
+                    store.save_proxy(value.as_deref()).await.ok();
+                    gateway.set_proxy(value);
+                }
+            });
+            let _ = task.await;
+
+            let _ = this.update(cx, |this, cx| {
+                this.settings_open = false;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// The signed-out landing page: exactly two entry buttons, side by side.

@@ -388,4 +388,7 @@ pub trait GitHubGateway: Send + Sync {
 
     /// The core rate-limit budget for the current credentials.
     async fn rate_limit(&self, token: &SecretToken) -> Result<RateLimit, GatewayError>;
+
+    /// Route every later request through this proxy (or none when `None`).
+    fn set_proxy(&self, proxy: Option<String>);
 }

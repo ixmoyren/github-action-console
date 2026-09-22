@@ -121,6 +121,8 @@ impl GitHubGateway for FakeGateway {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
 
+    fn set_proxy(&self, _proxy: Option<String>) {}
+
     async fn rate_limit(&self, _token: &SecretToken) -> Result<RateLimit, GatewayError> {
         self.limits
             .lock()

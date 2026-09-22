@@ -100,3 +100,8 @@ pub const STATUS_BAR_ACCOUNT: &str = "登录用户";
 pub const STATUS_BAR_RATE_LIMIT: &str = "限流余量";
 pub const STATUS_BAR_SIGNED_OUT: &str = "未登录";
 pub const NOTICES_DISMISS: &str = "清除通知";
+
+pub const SETTINGS_PROXY_LABEL: &str = "代理地址";
+pub const SETTINGS_PROXY_PLACEHOLDER: &str = "例如 http://127.0.0.1:7890";
+pub const SETTINGS_SAVE: &str = "保存";
+pub const SETTINGS_CLOSE: &str = "关闭";

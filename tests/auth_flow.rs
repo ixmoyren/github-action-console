@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use github_action_console::app::{AuthManager, AuthProblem, AuthState};
 use github_action_console::credentials;
 use github_action_console::github::{
-
     Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError, GitHubGateway,
     SecretToken,
 };
@@ -151,6 +150,8 @@ impl GitHubGateway for FakeGateway {
     ) -> Result<Vec<u8>, GatewayError> {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
+
+    fn set_proxy(&self, _proxy: Option<String>) {}
 
     async fn rate_limit(
         &self,

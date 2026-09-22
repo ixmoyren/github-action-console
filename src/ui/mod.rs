@@ -25,6 +25,7 @@ pub use launch::run;
 pub(super) use std::sync::Arc;
 pub(super) use std::time::Duration;
 
+pub(super) use gpui_kit::assets::IconName;
 pub(super) use gpui_kit::base::input::{InputEvent, InputState};
 pub(super) use gpui_kit::component::button::{Button, ButtonVariants};
 pub(super) use gpui_kit::component::input::Input;
@@ -76,6 +77,8 @@ struct Services {
     detail: Arc<Mutex<RunDetail>>,
     downloads: Arc<Mutex<Downloads>>,
     status: Arc<Mutex<Status>>,
+    store: Store,
+    initial_proxy: Option<String>,
     runtime: TokioRuntime,
 }
 
@@ -88,6 +91,9 @@ struct AppView {
     runtime: TokioRuntime,
     auth: AuthState,
     copied: bool,
+    settings_open: bool,
+    proxy_input: Entity<InputState>,
+    store: Store,
     flow_remaining_secs: Option<u64>,
     login_step: LoginStep,
     pat_input: Entity<InputState>,
@@ -145,6 +151,8 @@ impl AppView {
             detail,
             downloads,
             status,
+            store,
+            initial_proxy,
             runtime,
         } = services;
         let pat_input = cx.new(|cx| {
@@ -160,6 +168,14 @@ impl AppView {
         let branch_input = cx.new(|cx| {
             let mut state = InputState::new(window, cx);
             state.set_placeholder(labels::RUNS_BRANCH_PLACEHOLDER, window, cx);
+            state
+        });
+        let proxy_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx);
+            state.set_placeholder(labels::SETTINGS_PROXY_PLACEHOLDER, window, cx);
+            if let Some(proxy) = initial_proxy.clone() {
+                state.set_value(proxy, window, cx);
+            }
             state
         });
         let client_id_input = cx.new(|cx| {
@@ -182,6 +198,9 @@ impl AppView {
             runtime,
             auth: AuthState::LoggedOut { notice: None },
             copied: false,
+            settings_open: false,
+            proxy_input,
+            store,
             flow_remaining_secs: None,
             login_step: LoginStep::Home,
             pat_input,

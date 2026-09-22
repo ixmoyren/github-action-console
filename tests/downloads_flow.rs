@@ -139,6 +139,8 @@ impl GitHubGateway for FakeGateway {
             )))
     }
 
+    fn set_proxy(&self, _proxy: Option<String>) {}
+
     async fn rate_limit(
         &self,
         _token: &SecretToken,
