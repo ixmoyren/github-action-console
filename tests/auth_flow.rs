@@ -149,6 +149,13 @@ impl GitHubGateway for FakeGateway {
     ) -> Result<Vec<u8>, GatewayError> {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
+
+    async fn rate_limit(
+        &self,
+        _token: &SecretToken,
+    ) -> Result<github_action_console::github::RateLimit, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
 }
 
 fn device_start() -> DeviceFlowStart {

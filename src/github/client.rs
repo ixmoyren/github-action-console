@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Account, BuildArtifact, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError,
-    GitHubGateway, Job, Repository, RepositoryPage, RepositorySort, RunStatus, SecretToken, Step,
-    Workflow, WorkflowRun, WorkflowRunPage,
+    GitHubGateway, Job, RateLimit, Repository, RepositoryPage, RepositorySort, RunStatus,
+    SecretToken, Step, Workflow, WorkflowRun, WorkflowRunPage,
 };
 
 const DEFAULT_BASE_URI: &str = "https://github.com";
@@ -307,6 +307,19 @@ impl GitHubGateway for OctocrabGateway {
 
         Ok(bytes.to_vec())
     }
+
+    async fn rate_limit(&self, token: &SecretToken) -> Result<RateLimit, GatewayError> {
+        let crab = user_client(token)?;
+        let limits = crab.ratelimit().get().await.map_err(map_error)?;
+        let core = limits.resources.core;
+
+        Ok(RateLimit {
+            limit: core.limit as u64,
+            remaining: core.remaining as u64,
+            reset_at: chrono::DateTime::from_timestamp(core.reset as i64, 0)
+                .map(|reset| reset.to_rfc3339()),
+        })
+    }
 }
 
 fn user_client(token: &SecretToken) -> Result<Octocrab, GatewayError> {
@@ -355,7 +368,7 @@ fn map_conclusion(conclusion: &Option<octocrab::models::workflows::Conclusion>) 
             Conclusion::TimedOut => "timed_out",
             _ => "unknown",
         }
-            .to_owned()
+        .to_owned()
     })
 }
 

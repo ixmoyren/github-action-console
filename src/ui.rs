@@ -10,8 +10,8 @@ use gpui_kit::*;
 use tokio::sync::Mutex;
 
 use crate::app::{
-    AppProblem, AuthManager, AuthProblem, AuthState, DownloadState, Downloads, LoadState,
-    RepositoryList, RepositoryListState, RunDetail, Workspace, WorkspaceTab,
+    AppProblem, AuthManager, AuthProblem, AuthState, DownloadState, Downloads, LoadState, Notice,
+    RepositoryList, RepositoryListState, RunDetail, Status, Workspace, WorkspaceTab,
 };
 use crate::app_info::AppInfo;
 use crate::github::GitHubGateway;
@@ -35,6 +35,7 @@ struct Services {
     workspace: Arc<Mutex<Workspace>>,
     detail: Arc<Mutex<RunDetail>>,
     downloads: Arc<Mutex<Downloads>>,
+    status: Arc<Mutex<Status>>,
     runtime: TokioRuntime,
 }
 
@@ -79,6 +80,11 @@ struct AppView {
     artifacts: Vec<BuildArtifact>,
     artifacts_state: LoadState,
     download_state: DownloadState,
+    status: Arc<Mutex<Status>>,
+    status_account: Option<String>,
+    status_remaining: Option<u64>,
+    status_reset_at: Option<String>,
+    notices: Vec<Notice>,
 }
 
 impl AppView {
@@ -90,6 +96,7 @@ impl AppView {
             workspace,
             detail,
             downloads,
+            status,
             runtime,
         } = services;
         let pat_input = cx.new(|cx| {
@@ -154,6 +161,11 @@ impl AppView {
             artifacts: Vec::new(),
             artifacts_state: LoadState::Idle,
             download_state: DownloadState::Idle,
+            status,
+            status_account: None,
+            status_remaining: None,
+            status_reset_at: None,
+            notices: Vec::new(),
         }
     }
 
@@ -271,6 +283,11 @@ impl AppView {
                     &gateway, &manager, &picker, &workspace, &runtime, &this, cx,
                 )
                 .await;
+                let login = match manager.lock().await.state() {
+                    AuthState::Authenticated { account } => Some(account.login.clone()),
+                    _ => None,
+                };
+                let _ = this.update(cx, |this, cx| this.refresh_status_bar(login, cx));
             }
         })
         .detach();
@@ -333,6 +350,11 @@ impl AppView {
                             &gateway, &manager, &picker, &workspace, &runtime, &this, cx,
                         )
                         .await;
+                        let login = match manager.lock().await.state() {
+                            AuthState::Authenticated { account } => Some(account.login.clone()),
+                            _ => None,
+                        };
+                        let _ = this.update(cx, |this, cx| this.refresh_status_bar(login, cx));
                     }
                     break;
                 }
@@ -369,6 +391,11 @@ impl AppView {
                     &gateway, &manager, &picker, &workspace, &runtime, &this, cx,
                 )
                 .await;
+                let login = match manager.lock().await.state() {
+                    AuthState::Authenticated { account } => Some(account.login.clone()),
+                    _ => None,
+                };
+                let _ = this.update(cx, |this, cx| this.refresh_status_bar(login, cx));
             }
         })
         .detach();
@@ -1021,6 +1048,154 @@ impl AppView {
             Self::refresh_downloads(&downloads, &this, cx).await;
         })
         .detach();
+    }
+
+    // --- status bar and notices ------------------------------------------
+
+    async fn refresh_status(
+        status: &Arc<Mutex<Status>>,
+        this: &WeakEntity<AppView>,
+        cx: &mut AsyncApp,
+    ) {
+        let guard = status.lock().await;
+        let account = guard.account().map(str::to_owned);
+        let remaining = guard.remaining();
+        let reset_at = guard.reset_at().map(str::to_owned);
+        let notices = guard.notices().to_vec();
+        drop(guard);
+
+        let _ = this.update(cx, |this, cx| {
+            this.status_account = account;
+            this.status_remaining = remaining;
+            this.status_reset_at = reset_at;
+            this.notices = notices;
+            cx.notify();
+        });
+    }
+
+    /// Record who is signed in and refresh the rate-limit budget.
+    fn refresh_status_bar(&mut self, login: Option<String>, cx: &mut Context<Self>) {
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let status = self.status.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let token = { manager.lock().await.token() };
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                let status = status.clone();
+                let token = token.clone();
+                async move {
+                    let mut guard = status.lock().await;
+                    guard.set_account(login);
+                    if let Some(token) = token {
+                        guard.refresh_rate_limit(&*gateway, &token).await;
+                    }
+                }
+            });
+            let _ = task.await;
+            Self::refresh_status(&status, &this, cx).await;
+        })
+        .detach();
+    }
+
+    fn dismiss_notices(&mut self, cx: &mut Context<Self>) {
+        let status = self.status.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let task = runtime.spawn({
+                let status = status.clone();
+                async move {
+                    status.lock().await.dismiss_all();
+                }
+            });
+            let _ = task.await;
+            Self::refresh_status(&status, &this, cx).await;
+        })
+        .detach();
+    }
+
+    /// The first failure any visible view is currently showing, if any.
+    fn current_failure(&self) -> Option<AppProblem> {
+        if let RepositoryListState::Failed(problem) = self.repo_state {
+            return Some(problem);
+        }
+        let states = [
+            self.workflows_state,
+            self.runs_state,
+            self.jobs_state,
+            self.logs_state,
+            self.artifacts_state,
+        ];
+        for state in states {
+            if let LoadState::Failed(problem) = state {
+                return Some(problem);
+            }
+        }
+        match self.download_state {
+            DownloadState::Failed(problem) => Some(problem),
+            _ => None,
+        }
+    }
+
+    fn status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let account = self
+            .status_account
+            .clone()
+            .unwrap_or_else(|| labels::STATUS_BAR_SIGNED_OUT.to_owned());
+        let rate = match (self.status_remaining, self.status_reset_at.as_deref()) {
+            (Some(remaining), Some(reset)) => {
+                format!(
+                    "{}：{}（{}）",
+                    labels::STATUS_BAR_RATE_LIMIT,
+                    remaining,
+                    reset
+                )
+            }
+            (Some(remaining), None) => {
+                format!("{}：{}", labels::STATUS_BAR_RATE_LIMIT, remaining)
+            }
+            _ => format!(
+                "{}：{}",
+                labels::STATUS_BAR_RATE_LIMIT,
+                labels::VALUE_MISSING
+            ),
+        };
+
+        let mut notices = div().flex().flex_col().gap_1();
+        if let Some(problem) = self.current_failure() {
+            notices = notices.child(Label::new(crate::app::notice_for(problem).text).text_sm());
+        }
+        for notice in &self.notices {
+            notices = notices.child(Label::new(notice.text.clone()).text_sm());
+        }
+        if !self.notices.is_empty() {
+            notices = notices.child(
+                Button::new("dismiss-notices")
+                    .label(labels::NOTICES_DISMISS)
+                    .on_click(cx.listener(|this, _, _, cx| this.dismiss_notices(cx))),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_3()
+                    .child(Label::new(format!(
+                        "{}：{}",
+                        labels::STATUS_BAR_ACCOUNT,
+                        account
+                    )))
+                    .child(Label::new(rate)),
+            )
+            .child(notices)
+            .into_any_element()
     }
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
@@ -1785,6 +1960,7 @@ impl Render for AppView {
                     .justify_center()
                     .child(body),
             )
+            .child(self.status_bar(cx))
     }
 }
 
@@ -1832,6 +2008,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let workspace = Arc::new(Mutex::new(Workspace::new()));
     let detail = Arc::new(Mutex::new(RunDetail::new()));
     let downloads = Arc::new(Mutex::new(Downloads::new(default_download_dir()?)));
+    let status = Arc::new(Mutex::new(Status::new()));
 
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
@@ -1842,6 +2019,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let workspace = workspace.clone();
         let detail = detail.clone();
         let downloads = downloads.clone();
+        let status = status.clone();
         let runtime = runtime.clone();
 
         cx.spawn(async move |cx| {
@@ -1862,6 +2040,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         workspace,
                         detail,
                         downloads,
+                        status,
                         runtime,
                     };
                     let view = cx.new(|cx| AppView::new(info, services, window, cx));

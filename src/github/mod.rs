@@ -196,6 +196,14 @@ pub struct Job {
     pub steps: Vec<Step>,
 }
 
+/// The account's current core rate-limit budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimit {
+    pub limit: u64,
+    pub remaining: u64,
+    pub reset_at: Option<String>,
+}
+
 /// A build artifact produced by a run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildArtifact {
@@ -375,4 +383,7 @@ pub trait GitHubGateway: Send + Sync {
         repository: &str,
         artifact_id: u64,
     ) -> Result<Vec<u8>, GatewayError>;
+
+    /// The core rate-limit budget for the current credentials.
+    async fn rate_limit(&self, token: &SecretToken) -> Result<RateLimit, GatewayError>;
 }

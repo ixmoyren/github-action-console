@@ -92,3 +92,8 @@ pub const DOWNLOAD_CONFIRM: &str = "确认下载";
 pub const DOWNLOAD_CANCEL: &str = "取消";
 pub const DOWNLOADING: &str = "正在下载…";
 pub const DOWNLOAD_SAVED: &str = "已保存到";
+
+pub const STATUS_BAR_ACCOUNT: &str = "登录用户";
+pub const STATUS_BAR_RATE_LIMIT: &str = "限流余量";
+pub const STATUS_BAR_SIGNED_OUT: &str = "未登录";
+pub const NOTICES_DISMISS: &str = "清除通知";

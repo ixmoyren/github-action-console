@@ -137,6 +137,13 @@ impl GitHubGateway for FakeGateway {
                 "no scripted artifact".to_owned(),
             )))
     }
+
+    async fn rate_limit(
+        &self,
+        _token: &SecretToken,
+    ) -> Result<github_action_console::github::RateLimit, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
 }
 
 fn artifact(id: u64, name: &str, size_in_bytes: u64) -> BuildArtifact {
