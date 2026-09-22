@@ -139,9 +139,11 @@ impl AppView {
 
             let state = manager.lock().await.state().clone();
             let awaiting = matches!(state, AuthState::AwaitingAuthorization { .. });
+            let remaining = manager.lock().await.remaining_secs();
             let _ = this.update(cx, |this, cx| {
                 this.auth = state;
                 this.copied = false;
+                this.flow_remaining_secs = remaining;
                 // Only move off the client-id page once GitHub accepted it.
                 if awaiting {
                     this.login_step = LoginStep::DeviceFlow;
@@ -161,7 +163,19 @@ impl AppView {
                     }
                 };
 
-                cx.background_executor().timer(interval).await;
+                // Wait out the polling interval a second at a time so the
+                // validity countdown on screen actually moves.
+                let mut waited = Duration::ZERO;
+                while waited < interval {
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                    waited += Duration::from_secs(1);
+
+                    let remaining = manager.lock().await.remaining_secs();
+                    let _ = this.update(cx, |this, cx| {
+                        this.flow_remaining_secs = remaining;
+                        cx.notify();
+                    });
+                }
 
                 let task = runtime.spawn({
                     let manager = manager.clone();
@@ -172,10 +186,12 @@ impl AppView {
                 let _ = task.await;
 
                 let state = manager.lock().await.state().clone();
+                let remaining = manager.lock().await.remaining_secs();
                 let finished = !matches!(state, AuthState::AwaitingAuthorization { .. });
                 let authenticated = matches!(state, AuthState::Authenticated { .. });
                 let _ = this.update(cx, |this, cx| {
                     this.auth = state;
+                    this.flow_remaining_secs = remaining;
                     cx.notify();
                 });
                 if finished {
@@ -445,7 +461,7 @@ impl AppView {
                     .child(pickable(format!(
                         "{}：{}",
                         labels::LOGIN_EXPIRES_IN,
-                        start.expires_in_secs
+                        self.flow_remaining_secs.unwrap_or(start.expires_in_secs)
                     )))
                     .child(pickable(labels::LOGIN_WAITING))
                     .child(pickable(if self.copied {

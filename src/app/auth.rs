@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::credentials;
 use crate::github::{Account, DeviceFlowPoll, GatewayError, GitHubGateway, SecretToken};
@@ -55,6 +56,8 @@ pub struct AuthManager {
     token: Option<SecretToken>,
     /// The OAuth App client id the pending device flow was started with.
     device_client_id: Option<String>,
+    /// When the pending device code stops being valid.
+    device_flow_deadline: Option<Instant>,
 }
 
 impl AuthManager {
@@ -65,11 +68,18 @@ impl AuthManager {
             state: AuthState::LoggedOut { notice: None },
             token: None,
             device_client_id: None,
+            device_flow_deadline: None,
         }
     }
 
     pub fn state(&self) -> &AuthState {
         &self.state
+    }
+
+    /// Seconds left on the pending device code, counted down for the UI.
+    pub fn remaining_secs(&self) -> Option<u64> {
+        let deadline = self.device_flow_deadline?;
+        Some(deadline.saturating_duration_since(Instant::now()).as_secs())
     }
 
     /// The active credential, if any. Needed by callers that read from GitHub
@@ -139,6 +149,8 @@ impl AuthManager {
         match self.gateway.start_device_flow(&client_id).await {
             Ok(start) => {
                 self.device_client_id = Some(client_id);
+                self.device_flow_deadline =
+                    Some(Instant::now() + Duration::from_secs(start.expires_in_secs));
                 self.state = AuthState::AwaitingAuthorization { start };
             }
             Err(error) => {
@@ -162,11 +174,13 @@ impl AuthManager {
         match self.gateway.poll_device_flow(&client_id, &handle).await {
             Ok(DeviceFlowPoll::Pending) | Ok(DeviceFlowPoll::SlowDown) => {}
             Ok(DeviceFlowPoll::Expired) => {
+                self.device_flow_deadline = None;
                 self.state = AuthState::LoggedOut {
                     notice: Some(AuthProblem::Expired),
                 }
             }
             Ok(DeviceFlowPoll::Denied) => {
+                self.device_flow_deadline = None;
                 self.state = AuthState::LoggedOut {
                     notice: Some(AuthProblem::Denied),
                 }
@@ -177,6 +191,7 @@ impl AuthManager {
                         let _ = credentials::store_token(&account.login, &token);
                         let _ = self.store.save_account(&account, DEFAULT_HOST).await;
                         self.token = Some(token);
+                        self.device_flow_deadline = None;
                         self.state = AuthState::Authenticated { account };
                     }
                     Err(error) => {
@@ -227,6 +242,7 @@ impl AuthManager {
         let _ = self.store.clear_accounts().await;
         self.token = None;
         self.device_client_id = None;
+        self.device_flow_deadline = None;
         self.state = AuthState::LoggedOut { notice: None };
     }
 }

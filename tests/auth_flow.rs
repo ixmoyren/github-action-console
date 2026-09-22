@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use github_action_console::app::{AuthManager, AuthProblem, AuthState};
 use github_action_console::credentials;
 use github_action_console::github::{
+
     Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError, GitHubGateway,
     SecretToken,
 };
@@ -457,4 +458,44 @@ async fn a_client_id_typed_by_the_user_starts_the_device_flow() {
         manager.state(),
         AuthState::AwaitingAuthorization { .. }
     ));
+}
+
+#[tokio::test]
+async fn a_started_device_flow_reports_a_live_countdown() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_start(Ok(device_start()));
+    let mut manager = manager(gateway).await;
+
+    manager.start_device_flow("Iv1.test").await;
+
+    let remaining = manager.remaining_secs().expect("a countdown while pending");
+    assert!(remaining > 0);
+    assert!(remaining <= 900);
+}
+
+#[tokio::test]
+async fn an_expired_device_flow_stops_the_countdown() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_start(Ok(device_start()));
+    gateway.push_poll(Ok(DeviceFlowPoll::Expired));
+    let mut manager = manager(gateway).await;
+
+    manager.start_device_flow("Iv1.test").await;
+    manager.poll_device_flow().await;
+
+    assert_eq!(manager.remaining_secs(), None);
+}
+
+#[tokio::test]
+async fn signing_out_stops_the_countdown() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_start(Ok(device_start()));
+    let mut manager = manager(gateway).await;
+
+    manager.start_device_flow("Iv1.test").await;
+    assert!(manager.remaining_secs().is_some());
+
+    manager.sign_out().await;
+
+    assert_eq!(manager.remaining_secs(), None);
 }
