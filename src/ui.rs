@@ -4,20 +4,21 @@ use std::time::Duration;
 use gpui_kit::base::input::{InputEvent, InputState};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Root, Theme, label::Label};
 use gpui_kit::*;
 use tokio::sync::Mutex;
 
 use crate::app::{
     AppProblem, AuthManager, AuthProblem, AuthState, LoadState, RepositoryList,
-    RepositoryListState, Workspace, WorkspaceTab,
+    RepositoryListState, RunDetail, Workspace, WorkspaceTab,
 };
 use crate::app_info::AppInfo;
 use crate::github::GitHubGateway;
 use crate::github::client::OctocrabGateway;
 use crate::github::{
-    Repository, RepositorySort, RunFilter, RunStatusFilter, Workflow, WorkflowRun,
-    filter_repositories, filter_runs,
+    Job, Repository, RepositorySort, RunFilter, RunStatusFilter, Workflow, WorkflowRun,
+    filter_log_lines, filter_repositories, filter_runs,
 };
 use crate::labels;
 use crate::runtime::TokioRuntime;
@@ -32,6 +33,7 @@ struct Services {
     manager: Arc<Mutex<AuthManager>>,
     picker: Arc<Mutex<RepositoryList>>,
     workspace: Arc<Mutex<Workspace>>,
+    detail: Arc<Mutex<RunDetail>>,
     runtime: TokioRuntime,
 }
 
@@ -62,6 +64,16 @@ struct AppView {
     runs_workflow_filter: Option<u64>,
     workspace_tab: WorkspaceTab,
     polling: bool,
+    detail: Arc<Mutex<RunDetail>>,
+    open_run: Option<u64>,
+    run_html_url: Option<String>,
+    jobs: Vec<Job>,
+    jobs_state: LoadState,
+    selected_job: Option<u64>,
+    logs: Option<String>,
+    logs_state: LoadState,
+    logs_copied: bool,
+    log_input: Entity<InputState>,
 }
 
 impl AppView {
@@ -71,6 +83,7 @@ impl AppView {
             manager,
             picker,
             workspace,
+            detail,
             runtime,
         } = services;
         let pat_input = cx.new(|cx| {
@@ -86,6 +99,11 @@ impl AppView {
         let branch_input = cx.new(|cx| {
             let mut state = InputState::new(window, cx);
             state.set_placeholder(labels::RUNS_BRANCH_PLACEHOLDER, window, cx);
+            state
+        });
+        let log_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx);
+            state.set_placeholder(labels::LOGS_SEARCH_PLACEHOLDER, window, cx);
             state
         });
 
@@ -116,6 +134,16 @@ impl AppView {
             runs_workflow_filter: None,
             workspace_tab: WorkspaceTab::Workflows,
             polling: false,
+            detail,
+            open_run: None,
+            run_html_url: None,
+            jobs: Vec::new(),
+            jobs_state: LoadState::Idle,
+            selected_job: None,
+            logs: None,
+            logs_state: LoadState::Idle,
+            logs_copied: false,
+            log_input,
         }
     }
 
@@ -658,6 +686,135 @@ impl AppView {
         .detach();
     }
 
+    // --- run detail plumbing --------------------------------------------
+
+    async fn refresh_detail(
+        detail: &Arc<Mutex<RunDetail>>,
+        this: &WeakEntity<AppView>,
+        cx: &mut AsyncApp,
+    ) {
+        let guard = detail.lock().await;
+        let open_run = guard.run_id();
+        let html_url = guard.html_url().map(str::to_owned);
+        let jobs = guard.jobs().to_vec();
+        let jobs_state = guard.state();
+        let selected_job = guard.selected_job();
+        let logs = guard.logs().map(str::to_owned);
+        let logs_state = guard.logs_state();
+        drop(guard);
+
+        let _ = this.update(cx, |this, cx| {
+            this.open_run = open_run;
+            this.run_html_url = html_url;
+            this.jobs = jobs;
+            this.jobs_state = jobs_state;
+            this.selected_job = selected_job;
+            this.logs = logs;
+            this.logs_state = logs_state;
+            cx.notify();
+        });
+    }
+
+    fn open_run_detail(&mut self, run: WorkflowRun, cx: &mut Context<Self>) {
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let detail = self.detail.clone();
+        let workspace = self.workspace.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let repository = { workspace.lock().await.repository().map(str::to_owned) };
+            let Some(repository) = repository else {
+                return;
+            };
+
+            let task = runtime.spawn({
+                let detail = detail.clone();
+                let run = run.clone();
+                async move {
+                    detail.lock().await.open(&repository, &run);
+                }
+            });
+            let _ = task.await;
+
+            Self::refresh_detail(&detail, &this, cx).await;
+
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                let detail = detail.clone();
+                async move {
+                    detail.lock().await.load_jobs(&*gateway, &token).await;
+                }
+            });
+            let _ = task.await;
+
+            Self::refresh_detail(&detail, &this, cx).await;
+        })
+        .detach();
+    }
+
+    fn close_run(&mut self, cx: &mut Context<Self>) {
+        let detail = self.detail.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let task = runtime.spawn({
+                let detail = detail.clone();
+                async move {
+                    detail.lock().await.close();
+                }
+            });
+            let _ = task.await;
+
+            let _ = this.update(cx, |this, cx| {
+                this.open_run = None;
+                this.run_html_url = None;
+                this.jobs.clear();
+                this.jobs_state = LoadState::Idle;
+                this.selected_job = None;
+                this.logs = None;
+                this.logs_state = LoadState::Idle;
+                this.logs_copied = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn select_job(&mut self, job_id: u64, cx: &mut Context<Self>) {
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let detail = self.detail.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let task = runtime.spawn({
+                let detail = detail.clone();
+                async move {
+                    detail.lock().await.select_job(job_id);
+                }
+            });
+            let _ = task.await;
+            Self::refresh_detail(&detail, &this, cx).await;
+
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                let detail = detail.clone();
+                async move {
+                    detail.lock().await.load_logs(&*gateway, &token).await;
+                }
+            });
+            let _ = task.await;
+            Self::refresh_detail(&detail, &this, cx).await;
+        })
+        .detach();
+    }
+
     fn load_more(&mut self, cx: &mut Context<Self>) {
         let manager = self.manager.clone();
         let picker = self.picker.clone();
@@ -999,7 +1156,150 @@ impl AppView {
         panel.into_any_element()
     }
 
+    fn run_detail_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut panel = div().flex().flex_col().gap_3();
+
+        let open_url = self.run_html_url.clone();
+        panel = panel.child(
+            div()
+                .flex()
+                .flex_row()
+                .gap_2()
+                .child(
+                    Button::new("close-run")
+                        .label(labels::RUN_DETAIL_BACK)
+                        .on_click(cx.listener(|this, _, _, cx| this.close_run(cx))),
+                )
+                .child(
+                    Button::new("open-run-browser")
+                        .label(labels::RUN_DETAIL_OPEN_BROWSER)
+                        .on_click(move |_, _, _| {
+                            if let Some(url) = open_url.clone() {
+                                let _ = open::that(url);
+                            }
+                        }),
+                ),
+        );
+
+        panel = panel.child(Label::new(labels::JOBS_TITLE));
+        match self.jobs_state {
+            LoadState::Loading if self.jobs.is_empty() => {
+                panel = panel.child(Label::new(labels::JOBS_LOADING));
+            }
+            LoadState::Failed(problem) => {
+                panel = panel.child(Label::new(problem_text(problem)).text_sm());
+            }
+            LoadState::Loaded if self.jobs.is_empty() => {
+                panel = panel.child(Label::new(labels::JOBS_EMPTY));
+            }
+            _ => {}
+        }
+
+        let job_rows = self
+            .jobs
+            .iter()
+            .map(|job| {
+                let id = job.id;
+                let summary = format!(
+                    "{}｜{}｜{}",
+                    job.name,
+                    job.status.label(),
+                    job.conclusion
+                        .clone()
+                        .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
+                );
+                let steps = job
+                    .steps
+                    .iter()
+                    .map(|step| {
+                        format!(
+                            "{} {} {}",
+                            step.number,
+                            step.name,
+                            step.conclusion
+                                .clone()
+                                .unwrap_or_else(|| labels::VALUE_MISSING.to_owned())
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" / ");
+
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_3()
+                            .child(Label::new(summary))
+                            .child(
+                                Button::new(SharedString::from(format!("job-{id}")))
+                                    .label(labels::JOB_VIEW_LOGS)
+                                    .on_click(
+                                        cx.listener(move |this, _, _, cx| this.select_job(id, cx)),
+                                    ),
+                            ),
+                    )
+                    .child(Label::new(format!("{}：{}", labels::JOB_STEPS, steps)).text_sm())
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        panel = panel.child(div().flex().flex_col().gap_2().children(job_rows));
+
+        let log_text = self.logs.clone();
+        let query = self.log_input.read(cx).value().to_string();
+        let filtered = log_text.as_deref().map(|log| filter_log_lines(log, &query));
+
+        panel = panel.child(Label::new(labels::LOGS_TITLE));
+        panel = panel.child(Input::new(&self.log_input));
+
+        match filtered {
+            Some(text) => {
+                let body = if text.is_empty() {
+                    labels::LOGS_EMPTY.to_owned()
+                } else {
+                    text.clone()
+                };
+                let copy_label = if self.logs_copied {
+                    labels::LOGS_COPIED
+                } else {
+                    labels::LOGS_COPY
+                };
+                panel = panel.child(Button::new("copy-logs").label(copy_label).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                        this.logs_copied = true;
+                        cx.notify();
+                    }),
+                ));
+                panel = panel.child(
+                    div()
+                        .h(px(360.0))
+                        .overflow_y_scrollbar()
+                        .child(Label::new(body)),
+                );
+            }
+            None if self.logs_state == LoadState::Loading => {
+                panel = panel.child(Label::new(labels::LOGS_LOADING));
+            }
+            None => {
+                if let LoadState::Failed(problem) = self.logs_state {
+                    panel = panel.child(Label::new(problem_text(problem)).text_sm());
+                }
+            }
+        }
+
+        panel.into_any_element()
+    }
+
     fn runs_panel_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.open_run.is_some() {
+            return self.run_detail_ui(cx);
+        }
+
         let status_button = |id: &'static str, label: &'static str, active: bool| {
             let mut button = Button::new(id).label(label);
             if active {
@@ -1088,24 +1388,29 @@ impl AppView {
         let rows = visible
             .iter()
             .map(|run| {
-                Label::new(format!(
-                    "{}｜{}｜{}｜{}｜{}｜{}｜{}",
-                    run.status.label(),
-                    run.name,
-                    run.conclusion
-                        .clone()
-                        .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
-                    run.branch
-                        .clone()
-                        .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
-                    run.event,
-                    run.actor
-                        .clone()
-                        .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
-                    run.created_at
-                        .clone()
-                        .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
-                ))
+                let run = run.clone();
+                Button::new(SharedString::from(format!("run-{}", run.id)))
+                    .label(format!(
+                        "{}｜{}｜{}｜{}｜{}｜{}｜{}",
+                        run.status.label(),
+                        run.name,
+                        run.conclusion
+                            .clone()
+                            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
+                        run.branch
+                            .clone()
+                            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
+                        run.event,
+                        run.actor
+                            .clone()
+                            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
+                        run.created_at
+                            .clone()
+                            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
+                    ))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.open_run_detail(run.clone(), cx)),
+                    )
             })
             .collect::<Vec<_>>();
 
@@ -1204,6 +1509,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let manager = Arc::new(Mutex::new(AuthManager::new(gateway.clone(), store.clone())));
     let picker = Arc::new(Mutex::new(RepositoryList::new(gateway.clone(), store)));
     let workspace = Arc::new(Mutex::new(Workspace::new()));
+    let detail = Arc::new(Mutex::new(RunDetail::new()));
 
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
@@ -1212,6 +1518,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let manager = manager.clone();
         let picker = picker.clone();
         let workspace = workspace.clone();
+        let detail = detail.clone();
         let runtime = runtime.clone();
 
         cx.spawn(async move |cx| {
@@ -1230,6 +1537,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         manager,
                         picker,
                         workspace,
+                        detail,
                         runtime,
                     };
                     let view = cx.new(|cx| AppView::new(info, services, window, cx));

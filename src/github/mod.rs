@@ -167,6 +167,7 @@ pub struct WorkflowRun {
     pub event: String,
     pub actor: Option<String>,
     pub created_at: Option<String>,
+    pub html_url: Option<String>,
 }
 
 /// One page of runs plus whether another page exists.
@@ -174,6 +175,38 @@ pub struct WorkflowRun {
 pub struct WorkflowRunPage {
     pub runs: Vec<WorkflowRun>,
     pub has_more: bool,
+}
+
+/// One step inside a job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Step {
+    pub number: i64,
+    pub name: String,
+    pub status: RunStatus,
+    pub conclusion: Option<String>,
+}
+
+/// One job inside a run, with its steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Job {
+    pub id: u64,
+    pub name: String,
+    pub status: RunStatus,
+    pub conclusion: Option<String>,
+    pub steps: Vec<Step>,
+}
+
+/// Keep only the log lines matching `query` (case-insensitive). An empty query
+/// returns the log unchanged.
+pub fn filter_log_lines(log: &str, query: &str) -> String {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return log.to_owned();
+    }
+    log.lines()
+        .filter(|line| line.to_lowercase().contains(&query))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Status buckets the runs view can filter on.
@@ -289,4 +322,21 @@ pub trait GitHubGateway: Send + Sync {
         page: u32,
         per_page: u32,
     ) -> Result<WorkflowRunPage, GatewayError>;
+
+    async fn list_jobs(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        run_id: u64,
+    ) -> Result<Vec<Job>, GatewayError>;
+
+    /// A job's raw log text. An empty string is a valid, non-error result.
+    async fn job_logs(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        job_id: u64,
+    ) -> Result<String, GatewayError>;
 }

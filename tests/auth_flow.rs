@@ -99,6 +99,26 @@ impl GitHubGateway for FakeGateway {
     ) -> Result<github_action_console::github::WorkflowRunPage, GatewayError> {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
+
+    async fn list_jobs(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _run_id: u64,
+    ) -> Result<Vec<github_action_console::github::Job>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn job_logs(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _job_id: u64,
+    ) -> Result<String, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
 }
 
 fn device_start() -> DeviceFlowStart {

@@ -88,6 +88,26 @@ impl GitHubGateway for FakeGateway {
             .pop_front()
             .unwrap_or(Err(GatewayError::Unexpected("no scripted runs".to_owned())))
     }
+
+    async fn list_jobs(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _run_id: u64,
+    ) -> Result<Vec<github_action_console::github::Job>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn job_logs(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _job_id: u64,
+    ) -> Result<String, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
 }
 
 fn workflow(id: u64, name: &str) -> Workflow {
@@ -115,6 +135,7 @@ fn run(
         event: "push".to_owned(),
         actor: Some("octocat".to_owned()),
         created_at: Some("2026-09-22T10:00:00Z".to_owned()),
+        html_url: Some(format!("https://github.com/octo/alpha/actions/runs/{id}")),
     }
 }
 

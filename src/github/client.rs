@@ -4,9 +4,9 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError, GitHubGateway,
-    Repository, RepositoryPage, RepositorySort, RunStatus, SecretToken, Workflow, WorkflowRun,
-    WorkflowRunPage,
+    Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError, GitHubGateway, Job,
+    Repository, RepositoryPage, RepositorySort, RunStatus, SecretToken, Step, Workflow,
+    WorkflowRun, WorkflowRunPage,
 };
 
 const DEFAULT_BASE_URI: &str = "https://github.com";
@@ -201,6 +201,42 @@ impl GitHubGateway for OctocrabGateway {
             has_more: page.next.is_some(),
         })
     }
+
+    async fn list_jobs(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        run_id: u64,
+    ) -> Result<Vec<Job>, GatewayError> {
+        let crab = user_client(token)?;
+        let page = crab
+            .workflows(owner, repository)
+            .list_jobs(octocrab::models::RunId::from(run_id))
+            .per_page(100u8)
+            .send()
+            .await
+            .map_err(map_error)?;
+
+        Ok(page.items.into_iter().map(map_job).collect())
+    }
+
+    async fn job_logs(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        job_id: u64,
+    ) -> Result<String, GatewayError> {
+        let crab = user_client(token)?;
+        let bytes = crab
+            .workflows(owner, repository)
+            .download_job_logs(octocrab::models::JobId::from(job_id))
+            .await
+            .map_err(map_error)?;
+
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
 }
 
 fn user_client(token: &SecretToken) -> Result<Octocrab, GatewayError> {
@@ -222,6 +258,53 @@ fn map_run(run: octocrab::models::workflows::Run) -> WorkflowRun {
         // octocrab's typed `Run` does not carry the triggering actor.
         actor: None,
         created_at: Some(run.created_at.to_rfc3339()),
+        html_url: Some(run.html_url.to_string()),
+    }
+}
+
+fn map_status(status: &octocrab::models::workflows::Status) -> RunStatus {
+    use octocrab::models::workflows::Status;
+    match status {
+        Status::Pending | Status::Queued | Status::Waiting => RunStatus::Queued,
+        Status::InProgress => RunStatus::InProgress,
+        Status::Completed => RunStatus::Completed,
+        _ => RunStatus::Unknown,
+    }
+}
+
+fn map_conclusion(conclusion: &Option<octocrab::models::workflows::Conclusion>) -> Option<String> {
+    use octocrab::models::workflows::Conclusion;
+    conclusion.as_ref().map(|conclusion| {
+        match conclusion {
+            Conclusion::ActionRequired => "action_required",
+            Conclusion::Cancelled => "cancelled",
+            Conclusion::Failure => "failure",
+            Conclusion::Neutral => "neutral",
+            Conclusion::Skipped => "skipped",
+            Conclusion::Success => "success",
+            Conclusion::TimedOut => "timed_out",
+            _ => "unknown",
+        }
+        .to_owned()
+    })
+}
+
+fn map_job(job: octocrab::models::workflows::Job) -> Job {
+    Job {
+        id: job.id.into_inner(),
+        name: job.name,
+        status: map_status(&job.status),
+        conclusion: map_conclusion(&job.conclusion),
+        steps: job
+            .steps
+            .into_iter()
+            .map(|step| Step {
+                number: step.number,
+                name: step.name,
+                status: map_status(&step.status),
+                conclusion: map_conclusion(&step.conclusion),
+            })
+            .collect(),
     }
 }
 

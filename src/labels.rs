@@ -66,3 +66,17 @@ pub const RUNS_FILTER_COMPLETED: &str = "已完成";
 pub const RUNS_FILTER_WORKFLOW_ALL: &str = "全部工作流";
 pub const RUNS_BRANCH_PLACEHOLDER: &str = "按分支过滤";
 pub const VALUE_MISSING: &str = "—";
+
+pub const RUN_DETAIL_BACK: &str = "返回运行列表";
+pub const RUN_DETAIL_OPEN_BROWSER: &str = "在浏览器打开";
+pub const JOBS_TITLE: &str = "Jobs";
+pub const JOBS_LOADING: &str = "正在加载 job…";
+pub const JOBS_EMPTY: &str = "该运行没有 job。";
+pub const JOB_VIEW_LOGS: &str = "查看日志";
+pub const JOB_STEPS: &str = "步骤";
+pub const LOGS_TITLE: &str = "日志";
+pub const LOGS_LOADING: &str = "正在加载日志…";
+pub const LOGS_EMPTY: &str = "该 job 没有日志。";
+pub const LOGS_COPY: &str = "复制日志";
+pub const LOGS_COPIED: &str = "已复制";
+pub const LOGS_SEARCH_PLACEHOLDER: &str = "在日志中搜索";
