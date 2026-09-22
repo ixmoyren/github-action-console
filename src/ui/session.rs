@@ -369,7 +369,8 @@ impl AppView {
                     .flex_row()
                     .items_center()
                     .gap_3()
-                    .child(Input::new(&self.pat_input))
+                    .w(px(360.0))
+                    .child(Input::new(&self.pat_input).flex_1())
                     .child(
                         Button::new("submit-pat")
                             .label(labels::LOGIN_PAT_SUBMIT_ARROW)
