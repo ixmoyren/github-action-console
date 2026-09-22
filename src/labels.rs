@@ -43,6 +43,11 @@ pub const REPOSITORIES_LOADING: &str = "正在加载仓库…";
 pub const REPOSITORIES_EMPTY: &str = "没有匹配的仓库。";
 pub const REPOSITORIES_PRIVATE: &str = "私有";
 pub const REPOSITORIES_PUBLIC: &str = "公开";
+pub const REPOSITORIES_COLUMN_NAME: &str = "仓库";
+pub const REPOSITORIES_COLUMN_VISIBILITY: &str = "可见性";
+pub const REPOSITORIES_COLUMN_BRANCH: &str = "默认分支";
+pub const REPOSITORIES_COLUMN_COMMIT: &str = "最近提交";
+pub const REPOSITORIES_COLUMN_COMMIT_DATE: &str = "提交日期";
 
 pub const WORKSPACE_BACK: &str = "返回仓库列表";
 pub const WORKSPACE_WORKFLOWS: &str = "工作流";

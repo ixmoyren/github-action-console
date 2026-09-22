@@ -31,6 +31,7 @@ pub(super) use gpui_kit::base::input::{InputEvent, InputState};
 pub(super) use gpui_kit::component::button::{Button, ButtonVariants};
 pub(super) use gpui_kit::component::input::Input;
 pub(super) use gpui_kit::component::scroll::ScrollableElement as _;
+pub(super) use gpui_kit::component::table::{Column, TableState};
 pub(super) use gpui_kit::component::{Root, Theme, label::Label};
 pub(super) use gpui_kit::*;
 pub(super) use tokio::sync::Mutex;
@@ -44,8 +45,8 @@ pub(super) use crate::app_info::AppInfo;
 pub(super) use crate::github::GitHubGateway;
 pub(super) use crate::github::client::OctocrabGateway;
 pub(super) use crate::github::{
-    BuildArtifact, Job, Repository, RepositorySort, RunFilter, RunStatusFilter, Workflow,
-    WorkflowRun, filter_log_lines, filter_repositories, filter_runs,
+    BuildArtifact, CommitSummary, Job, Repository, RepositorySort, RunFilter, RunStatusFilter,
+    Workflow, WorkflowRun, filter_log_lines, filter_repositories, filter_runs,
 };
 pub(super) use crate::labels;
 pub(super) use crate::runtime::TokioRuntime;
@@ -103,6 +104,8 @@ struct AppView {
     search_input: Entity<InputState>,
     branch_input: Entity<InputState>,
     pat_subscription: Option<Subscription>,
+    search_subscription: Option<Subscription>,
+    repo_table: Entity<TableState<repositories::RepositoryTableDelegate>>,
     repos: Vec<Repository>,
     repo_state: RepositoryListState,
     repo_has_more: bool,
@@ -186,6 +189,15 @@ impl AppView {
             state
         });
 
+        let repo_view = cx.weak_entity();
+        let repo_table = cx.new(move |cx| {
+            TableState::new(
+                repositories::RepositoryTableDelegate::new(repo_view),
+                window,
+                cx,
+            )
+        });
+
         Self {
             gateway,
             manager,
@@ -205,6 +217,8 @@ impl AppView {
             search_input,
             branch_input,
             pat_subscription: None,
+            search_subscription: None,
+            repo_table,
             repos: Vec::new(),
             repo_state: RepositoryListState::Idle,
             repo_has_more: false,

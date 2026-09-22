@@ -144,6 +144,8 @@ fn repository(full_name: &str, is_private: bool) -> Repository {
         name: full_name.rsplit('/').next().unwrap_or(full_name).to_owned(),
         full_name: full_name.to_owned(),
         is_private,
+        default_branch: Some("main".to_owned()),
+        latest_commit: None,
     }
 }
 

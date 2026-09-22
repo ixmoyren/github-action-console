@@ -17,6 +17,15 @@ impl AppView {
                 }
             },
         ));
+        self.search_subscription = Some(cx.subscribe(
+            &self.search_input,
+            |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.refresh_repo_table(cx);
+                    cx.notify();
+                }
+            },
+        ));
     }
     pub(super) async fn refresh_picker(
         picker: &Arc<Mutex<RepositoryList>>,
@@ -40,6 +49,7 @@ impl AppView {
             this.repo_has_more = has_more;
             this.repo_sort = sort;
             this.selected = selected;
+            this.refresh_repo_table(cx);
             cx.notify();
         }) {
             warn!(?error, "the view was gone before the update landed");
@@ -392,6 +402,7 @@ impl AppView {
                 this.repos.clear();
                 this.repo_state = RepositoryListState::Idle;
                 this.workspace_tab = WorkspaceTab::Workflows;
+                this.refresh_repo_table(cx);
                 cx.notify();
             }) {
                 warn!(?error, "the view was gone before the update landed");

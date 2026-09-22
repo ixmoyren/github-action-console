@@ -79,11 +79,20 @@ impl RepositorySort {
     }
 }
 
+/// The newest commit on a repository's default branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitSummary {
+    pub message: String,
+    pub committed_at: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repository {
     pub name: String,
     pub full_name: String,
     pub is_private: bool,
+    pub default_branch: Option<String>,
+    pub latest_commit: Option<CommitSummary>,
 }
 
 impl Repository {

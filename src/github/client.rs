@@ -4,9 +4,9 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Account, BuildArtifact, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError,
-    GitHubGateway, Job, RateLimit, Repository, RepositoryPage, RepositorySort, RunStatus,
-    SecretToken, Step, Workflow, WorkflowRun, WorkflowRunPage,
+    Account, BuildArtifact, CommitSummary, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart,
+    GatewayError, GitHubGateway, Job, RateLimit, Repository, RepositoryPage, RepositorySort,
+    RunStatus, SecretToken, Step, Workflow, WorkflowRun, WorkflowRunPage,
 };
 
 const DEFAULT_BASE_URI: &str = "https://github.com";
@@ -130,17 +130,29 @@ impl GitHubGateway for OctocrabGateway {
             .await
             .map_err(map_error)?;
 
-        Ok(RepositoryPage {
-            repositories: page
-                .items
-                .into_iter()
-                .map(|repository| Repository {
+        // The listing has no commit message, so each repository needs one
+        // extra request for its default branch's newest commit. They run
+        // together; a single failure only blanks that row's commit columns.
+        let has_more = page.next.is_some();
+        let repositories = futures::future::join_all(page.items.into_iter().map(|repository| {
+            let crab = crab.clone();
+            async move {
+                let full_name = repository.full_name.unwrap_or_default();
+                let latest_commit = latest_commit(&crab, &full_name).await;
+                Repository {
                     name: repository.name,
-                    full_name: repository.full_name.unwrap_or_default(),
+                    full_name,
                     is_private: repository.private.unwrap_or(false),
-                })
-                .collect(),
-            has_more: page.next.is_some(),
+                    default_branch: repository.default_branch,
+                    latest_commit,
+                }
+            }
+        }))
+        .await;
+
+        Ok(RepositoryPage {
+            repositories,
+            has_more,
         })
     }
 
@@ -346,6 +358,39 @@ fn user_client(token: &SecretToken) -> Result<Octocrab, GatewayError> {
         .user_access_token(token.expose().to_owned())
         .build()
         .map_err(unexpected)
+}
+
+/// The newest commit on `full_name`'s default branch, or `None` when the
+/// repository is unreachable or has no commits yet.
+async fn latest_commit(crab: &Octocrab, full_name: &str) -> Option<CommitSummary> {
+    let (owner, repository) = full_name.split_once('/')?;
+    let page = match crab
+        .repos(owner, repository)
+        .list_commits()
+        .per_page(1u8)
+        .send()
+        .await
+    {
+        Ok(page) => page,
+        Err(error) => {
+            tracing::debug!(%full_name, %error, "could not read the latest commit");
+            return None;
+        }
+    };
+
+    page.items.into_iter().next().map(|commit| {
+        let committed_at = commit
+            .commit
+            .author
+            .as_ref()
+            .and_then(|author| author.date)
+            .or_else(|| commit.commit.committer.as_ref().and_then(|c| c.date))
+            .map(|date| date.to_rfc3339());
+        CommitSummary {
+            message: commit.commit.message,
+            committed_at,
+        }
+    })
 }
 
 fn map_run(run: octocrab::models::workflows::Run) -> WorkflowRun {

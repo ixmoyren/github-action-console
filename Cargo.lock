@@ -2485,6 +2485,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dirs 7.0.0",
+ "futures",
  "gpui-kit",
  "http",
  "keyring",
