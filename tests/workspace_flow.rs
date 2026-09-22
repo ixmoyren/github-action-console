@@ -108,6 +108,36 @@ impl GitHubGateway for FakeGateway {
     ) -> Result<String, GatewayError> {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
+
+    async fn run_logs_archive(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _run_id: u64,
+    ) -> Result<Vec<u8>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn list_artifacts(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _run_id: u64,
+    ) -> Result<Vec<github_action_console::github::BuildArtifact>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn download_artifact(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _artifact_id: u64,
+    ) -> Result<Vec<u8>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
 }
 
 fn workflow(id: u64, name: &str) -> Workflow {

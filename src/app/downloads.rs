@@ -1,0 +1,205 @@
+use std::path::PathBuf;
+
+use crate::github::{BuildArtifact, GitHubGateway, SecretToken, split_full_name};
+
+use super::repositories::AppProblem;
+
+/// Artifacts larger than this need an explicit confirmation before download.
+pub const DEFAULT_SIZE_THRESHOLD_BYTES: u64 = 50 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DownloadKind {
+    RunLogs { run_id: u64 },
+    Artifact { artifact_id: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingDownload {
+    pub file_name: String,
+    pub size_in_bytes: Option<u64>,
+    pub kind: DownloadKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum DownloadState {
+    #[default]
+    Idle,
+    NeedsConfirmation(PendingDownload),
+    Downloading,
+    Saved(PathBuf),
+    Failed(AppProblem),
+}
+
+/// Downloads run log archives and build artifacts to a local directory.
+/// octocrab buffers whole payloads in memory, so anything large is confirmed
+/// first (ticket 07).
+pub struct Downloads {
+    directory: PathBuf,
+    threshold: u64,
+    state: DownloadState,
+}
+
+impl Downloads {
+    pub fn new(directory: impl Into<PathBuf>) -> Self {
+        Self::with_threshold(directory, DEFAULT_SIZE_THRESHOLD_BYTES)
+    }
+
+    pub fn with_threshold(directory: impl Into<PathBuf>, threshold: u64) -> Self {
+        Self {
+            directory: directory.into(),
+            threshold,
+            state: DownloadState::Idle,
+        }
+    }
+
+    pub fn state(&self) -> &DownloadState {
+        &self.state
+    }
+
+    pub fn threshold(&self) -> u64 {
+        self.threshold
+    }
+
+    pub fn file_name_for_artifact(artifact: &BuildArtifact) -> String {
+        format!("{}.zip", sanitize(&artifact.name))
+    }
+
+    pub fn file_name_for_run_logs(run_id: u64) -> String {
+        format!("run-{run_id}-logs.zip")
+    }
+
+    /// Whether this artifact is big enough to need a confirmation.
+    pub fn needs_confirmation(&self, artifact: &BuildArtifact) -> bool {
+        artifact.size_in_bytes > self.threshold
+    }
+
+    /// Park an artifact behind a confirmation prompt.
+    pub fn queue_artifact(&mut self, artifact: &BuildArtifact) {
+        self.state = DownloadState::NeedsConfirmation(PendingDownload {
+            file_name: Self::file_name_for_artifact(artifact),
+            size_in_bytes: Some(artifact.size_in_bytes),
+            kind: DownloadKind::Artifact {
+                artifact_id: artifact.id,
+            },
+        });
+    }
+
+    pub fn cancel(&mut self) {
+        self.state = DownloadState::Idle;
+    }
+
+    pub async fn download_run_logs(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        repository: &str,
+        run_id: u64,
+    ) {
+        let file_name = Self::file_name_for_run_logs(run_id);
+        self.perform(
+            gateway,
+            token,
+            repository,
+            DownloadKind::RunLogs { run_id },
+            file_name,
+        )
+        .await;
+    }
+
+    pub async fn download_artifact(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        repository: &str,
+        artifact: &BuildArtifact,
+    ) {
+        let file_name = Self::file_name_for_artifact(artifact);
+        self.perform(
+            gateway,
+            token,
+            repository,
+            DownloadKind::Artifact {
+                artifact_id: artifact.id,
+            },
+            file_name,
+        )
+        .await;
+    }
+
+    /// Run the download the user just confirmed.
+    pub async fn confirm(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        repository: &str,
+    ) {
+        let DownloadState::NeedsConfirmation(pending) = self.state.clone() else {
+            return;
+        };
+        self.perform(gateway, token, repository, pending.kind, pending.file_name)
+            .await;
+    }
+
+    /// The artifact behind the current confirmation prompt, if any.
+    pub fn pending(&self) -> Option<&PendingDownload> {
+        match &self.state {
+            DownloadState::NeedsConfirmation(pending) => Some(pending),
+            _ => None,
+        }
+    }
+
+    async fn perform(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        repository: &str,
+        kind: DownloadKind,
+        file_name: String,
+    ) {
+        let Some((owner, repository_name)) = split_full_name(repository) else {
+            self.state = DownloadState::Failed(AppProblem::Unexpected);
+            return;
+        };
+
+        self.state = DownloadState::Downloading;
+        let bytes = match kind {
+            DownloadKind::RunLogs { run_id } => {
+                gateway
+                    .run_logs_archive(token, &owner, &repository_name, run_id)
+                    .await
+            }
+            DownloadKind::Artifact { artifact_id } => {
+                gateway
+                    .download_artifact(token, &owner, &repository_name, artifact_id)
+                    .await
+            }
+        };
+
+        match bytes {
+            Ok(bytes) => match self.save(&file_name, &bytes) {
+                Ok(path) => self.state = DownloadState::Saved(path),
+                Err(_) => self.state = DownloadState::Failed(AppProblem::Unexpected),
+            },
+            Err(error) => self.state = DownloadState::Failed(AppProblem::from_gateway(&error)),
+        }
+    }
+
+    fn save(&self, file_name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+        std::fs::create_dir_all(&self.directory)?;
+        let path = self.directory.join(file_name);
+        std::fs::write(&path, bytes)?;
+        Ok(path)
+    }
+}
+
+fn sanitize(name: &str) -> String {
+    name.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}

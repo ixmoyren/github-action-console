@@ -80,3 +80,15 @@ pub const LOGS_EMPTY: &str = "该 job 没有日志。";
 pub const LOGS_COPY: &str = "复制日志";
 pub const LOGS_COPIED: &str = "已复制";
 pub const LOGS_SEARCH_PLACEHOLDER: &str = "在日志中搜索";
+
+pub const ARTIFACTS_TITLE: &str = "构建产物";
+pub const ARTIFACTS_LOADING: &str = "正在加载构建产物…";
+pub const ARTIFACTS_EMPTY: &str = "该运行没有构建产物。";
+pub const ARTIFACTS_EXPIRED: &str = "已过期";
+pub const ARTIFACT_DOWNLOAD: &str = "下载";
+pub const RUN_LOGS_DOWNLOAD: &str = "下载运行日志包";
+pub const DOWNLOAD_CONFIRM_TITLE: &str = "该文件较大，确认下载？";
+pub const DOWNLOAD_CONFIRM: &str = "确认下载";
+pub const DOWNLOAD_CANCEL: &str = "取消";
+pub const DOWNLOADING: &str = "正在下载…";
+pub const DOWNLOAD_SAVED: &str = "已保存到";

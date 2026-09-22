@@ -10,15 +10,15 @@ use gpui_kit::*;
 use tokio::sync::Mutex;
 
 use crate::app::{
-    AppProblem, AuthManager, AuthProblem, AuthState, LoadState, RepositoryList,
-    RepositoryListState, RunDetail, Workspace, WorkspaceTab,
+    AppProblem, AuthManager, AuthProblem, AuthState, DownloadState, Downloads, LoadState,
+    RepositoryList, RepositoryListState, RunDetail, Workspace, WorkspaceTab,
 };
 use crate::app_info::AppInfo;
 use crate::github::GitHubGateway;
 use crate::github::client::OctocrabGateway;
 use crate::github::{
-    Job, Repository, RepositorySort, RunFilter, RunStatusFilter, Workflow, WorkflowRun,
-    filter_log_lines, filter_repositories, filter_runs,
+    BuildArtifact, Job, Repository, RepositorySort, RunFilter, RunStatusFilter, Workflow,
+    WorkflowRun, filter_log_lines, filter_repositories, filter_runs,
 };
 use crate::labels;
 use crate::runtime::TokioRuntime;
@@ -34,6 +34,7 @@ struct Services {
     picker: Arc<Mutex<RepositoryList>>,
     workspace: Arc<Mutex<Workspace>>,
     detail: Arc<Mutex<RunDetail>>,
+    downloads: Arc<Mutex<Downloads>>,
     runtime: TokioRuntime,
 }
 
@@ -65,6 +66,7 @@ struct AppView {
     workspace_tab: WorkspaceTab,
     polling: bool,
     detail: Arc<Mutex<RunDetail>>,
+    downloads: Arc<Mutex<Downloads>>,
     open_run: Option<u64>,
     run_html_url: Option<String>,
     jobs: Vec<Job>,
@@ -74,6 +76,9 @@ struct AppView {
     logs_state: LoadState,
     logs_copied: bool,
     log_input: Entity<InputState>,
+    artifacts: Vec<BuildArtifact>,
+    artifacts_state: LoadState,
+    download_state: DownloadState,
 }
 
 impl AppView {
@@ -84,6 +89,7 @@ impl AppView {
             picker,
             workspace,
             detail,
+            downloads,
             runtime,
         } = services;
         let pat_input = cx.new(|cx| {
@@ -135,6 +141,7 @@ impl AppView {
             workspace_tab: WorkspaceTab::Workflows,
             polling: false,
             detail,
+            downloads,
             open_run: None,
             run_html_url: None,
             jobs: Vec::new(),
@@ -144,6 +151,9 @@ impl AppView {
             logs_state: LoadState::Idle,
             logs_copied: false,
             log_input,
+            artifacts: Vec::new(),
+            artifacts_state: LoadState::Idle,
+            download_state: DownloadState::Idle,
         }
     }
 
@@ -752,6 +762,11 @@ impl AppView {
             let _ = task.await;
 
             Self::refresh_detail(&detail, &this, cx).await;
+
+            let _ = this.update(cx, |this, cx| {
+                this.artifacts_state = LoadState::Loading;
+                this.load_artifacts(cx);
+            });
         })
         .detach();
     }
@@ -777,6 +792,9 @@ impl AppView {
                 this.logs = None;
                 this.logs_state = LoadState::Idle;
                 this.logs_copied = false;
+                this.artifacts.clear();
+                this.artifacts_state = LoadState::Idle;
+                this.download_state = DownloadState::Idle;
                 cx.notify();
             });
         })
@@ -811,6 +829,196 @@ impl AppView {
             });
             let _ = task.await;
             Self::refresh_detail(&detail, &this, cx).await;
+        })
+        .detach();
+    }
+
+    // --- download plumbing ----------------------------------------------
+
+    async fn refresh_downloads(
+        downloads: &Arc<Mutex<Downloads>>,
+        this: &WeakEntity<AppView>,
+        cx: &mut AsyncApp,
+    ) {
+        let state = { downloads.lock().await.state().clone() };
+        let _ = this.update(cx, |this, cx| {
+            this.download_state = state;
+            cx.notify();
+        });
+    }
+
+    fn load_artifacts(&mut self, cx: &mut Context<Self>) {
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let detail = self.detail.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let (repository, run_id) = {
+                let guard = detail.lock().await;
+                (guard.repository().map(str::to_owned), guard.run_id())
+            };
+            let (Some(repository), Some(run_id)) = (repository, run_id) else {
+                return;
+            };
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                async move {
+                    let (owner, name) = crate::github::split_full_name(&repository)?;
+                    gateway
+                        .list_artifacts(&token, &owner, &name, run_id)
+                        .await
+                        .ok()
+                }
+            });
+            let artifacts = task.await.ok().flatten();
+            let _ = this.update(cx, |this, cx| {
+                match artifacts {
+                    Some(artifacts) => {
+                        this.artifacts = artifacts;
+                        this.artifacts_state = LoadState::Loaded;
+                    }
+                    None => this.artifacts_state = LoadState::Failed(AppProblem::Unexpected),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn download_run_logs(&mut self, cx: &mut Context<Self>) {
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let detail = self.detail.clone();
+        let downloads = self.downloads.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let (repository, run_id) = {
+                let guard = detail.lock().await;
+                (guard.repository().map(str::to_owned), guard.run_id())
+            };
+            let (Some(repository), Some(run_id)) = (repository, run_id) else {
+                return;
+            };
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                let downloads = downloads.clone();
+                async move {
+                    downloads
+                        .lock()
+                        .await
+                        .download_run_logs(&*gateway, &token, &repository, run_id)
+                        .await;
+                }
+            });
+            let _ = task.await;
+            Self::refresh_downloads(&downloads, &this, cx).await;
+        })
+        .detach();
+    }
+
+    fn download_artifact(&mut self, artifact: BuildArtifact, cx: &mut Context<Self>) {
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let detail = self.detail.clone();
+        let downloads = self.downloads.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let repository = { detail.lock().await.repository().map(str::to_owned) };
+            let Some(repository) = repository else {
+                return;
+            };
+
+            // Large artifacts stop here and wait for a confirmation.
+            let needs_confirmation = {
+                let mut guard = downloads.lock().await;
+                if guard.needs_confirmation(&artifact) {
+                    guard.queue_artifact(&artifact);
+                    true
+                } else {
+                    false
+                }
+            };
+            if needs_confirmation {
+                Self::refresh_downloads(&downloads, &this, cx).await;
+                return;
+            }
+
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                let downloads = downloads.clone();
+                async move {
+                    downloads
+                        .lock()
+                        .await
+                        .download_artifact(&*gateway, &token, &repository, &artifact)
+                        .await;
+                }
+            });
+            let _ = task.await;
+            Self::refresh_downloads(&downloads, &this, cx).await;
+        })
+        .detach();
+    }
+
+    fn confirm_download(&mut self, cx: &mut Context<Self>) {
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let detail = self.detail.clone();
+        let downloads = self.downloads.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let repository = { detail.lock().await.repository().map(str::to_owned) };
+            let Some(repository) = repository else {
+                return;
+            };
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                let downloads = downloads.clone();
+                async move {
+                    downloads
+                        .lock()
+                        .await
+                        .confirm(&*gateway, &token, &repository)
+                        .await;
+                }
+            });
+            let _ = task.await;
+            Self::refresh_downloads(&downloads, &this, cx).await;
+        })
+        .detach();
+    }
+
+    fn cancel_download(&mut self, cx: &mut Context<Self>) {
+        let downloads = self.downloads.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let task = runtime.spawn({
+                let downloads = downloads.clone();
+                async move {
+                    downloads.lock().await.cancel();
+                }
+            });
+            let _ = task.await;
+            Self::refresh_downloads(&downloads, &this, cx).await;
         })
         .detach();
     }
@@ -1292,6 +1500,109 @@ impl AppView {
             }
         }
 
+        panel = panel.child(Label::new(labels::ARTIFACTS_TITLE));
+        match self.artifacts_state {
+            LoadState::Loading if self.artifacts.is_empty() => {
+                panel = panel.child(Label::new(labels::ARTIFACTS_LOADING));
+            }
+            LoadState::Failed(problem) => {
+                panel = panel.child(Label::new(problem_text(problem)).text_sm());
+            }
+            LoadState::Loaded if self.artifacts.is_empty() => {
+                panel = panel.child(Label::new(labels::ARTIFACTS_EMPTY));
+            }
+            _ => {}
+        }
+
+        let artifact_rows = self
+            .artifacts
+            .iter()
+            .map(|artifact| {
+                let artifact = artifact.clone();
+                let expired = if artifact.expired {
+                    format!("（{}）", labels::ARTIFACTS_EXPIRED)
+                } else {
+                    String::new()
+                };
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(Label::new(format!(
+                        "{}｜{} B{}",
+                        artifact.name, artifact.size_in_bytes, expired
+                    )))
+                    .child(
+                        Button::new(SharedString::from(format!("artifact-{}", artifact.id)))
+                            .label(labels::ARTIFACT_DOWNLOAD)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.download_artifact(artifact.clone(), cx)
+                            })),
+                    )
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        panel = panel.child(div().flex().flex_col().gap_2().children(artifact_rows));
+
+        panel = panel.child(
+            Button::new("download-run-logs")
+                .label(labels::RUN_LOGS_DOWNLOAD)
+                .on_click(cx.listener(|this, _, _, cx| this.download_run_logs(cx))),
+        );
+
+        match &self.download_state {
+            DownloadState::NeedsConfirmation(pending) => {
+                let size = pending.size_in_bytes.unwrap_or_default();
+                panel = panel.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(Label::new(format!(
+                            "{}（{} B）",
+                            labels::DOWNLOAD_CONFIRM_TITLE,
+                            size
+                        )))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    Button::new("confirm-download")
+                                        .label(labels::DOWNLOAD_CONFIRM)
+                                        .primary()
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.confirm_download(cx)),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("cancel-download")
+                                        .label(labels::DOWNLOAD_CANCEL)
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.cancel_download(cx)),
+                                        ),
+                                ),
+                        ),
+                );
+            }
+            DownloadState::Downloading => {
+                panel = panel.child(Label::new(labels::DOWNLOADING));
+            }
+            DownloadState::Saved(path) => {
+                panel = panel.child(Label::new(format!(
+                    "{}：{}",
+                    labels::DOWNLOAD_SAVED,
+                    path.display()
+                )));
+            }
+            DownloadState::Failed(problem) => {
+                panel = panel.child(Label::new(problem_text(*problem)).text_sm());
+            }
+            DownloadState::Idle => {}
+        }
+
         panel.into_any_element()
     }
 
@@ -1477,6 +1788,16 @@ impl Render for AppView {
     }
 }
 
+fn default_download_dir() -> std::io::Result<std::path::PathBuf> {
+    let database = default_store_path()?;
+    let dir = database
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("downloads");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
 fn default_store_path() -> std::io::Result<std::path::PathBuf> {
     let base = if cfg!(target_os = "windows") {
         std::env::var_os("APPDATA").map(std::path::PathBuf::from)
@@ -1510,6 +1831,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let picker = Arc::new(Mutex::new(RepositoryList::new(gateway.clone(), store)));
     let workspace = Arc::new(Mutex::new(Workspace::new()));
     let detail = Arc::new(Mutex::new(RunDetail::new()));
+    let downloads = Arc::new(Mutex::new(Downloads::new(default_download_dir()?)));
 
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
@@ -1519,6 +1841,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let picker = picker.clone();
         let workspace = workspace.clone();
         let detail = detail.clone();
+        let downloads = downloads.clone();
         let runtime = runtime.clone();
 
         cx.spawn(async move |cx| {
@@ -1538,6 +1861,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         picker,
                         workspace,
                         detail,
+                        downloads,
                         runtime,
                     };
                     let view = cx.new(|cx| AppView::new(info, services, window, cx));

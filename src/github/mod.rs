@@ -196,6 +196,16 @@ pub struct Job {
     pub steps: Vec<Step>,
 }
 
+/// A build artifact produced by a run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildArtifact {
+    pub id: u64,
+    pub name: String,
+    pub size_in_bytes: u64,
+    pub expired: bool,
+    pub download_url: Option<String>,
+}
+
 /// Keep only the log lines matching `query` (case-insensitive). An empty query
 /// returns the log unchanged.
 pub fn filter_log_lines(log: &str, query: &str) -> String {
@@ -339,4 +349,30 @@ pub trait GitHubGateway: Send + Sync {
         repository: &str,
         job_id: u64,
     ) -> Result<String, GatewayError>;
+
+    /// The zip archive of a whole run's logs.
+    async fn run_logs_archive(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        run_id: u64,
+    ) -> Result<Vec<u8>, GatewayError>;
+
+    async fn list_artifacts(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        run_id: u64,
+    ) -> Result<Vec<BuildArtifact>, GatewayError>;
+
+    /// One artifact's zip archive.
+    async fn download_artifact(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        artifact_id: u64,
+    ) -> Result<Vec<u8>, GatewayError>;
 }

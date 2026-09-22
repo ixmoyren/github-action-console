@@ -4,9 +4,9 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError, GitHubGateway, Job,
-    Repository, RepositoryPage, RepositorySort, RunStatus, SecretToken, Step, Workflow,
-    WorkflowRun, WorkflowRunPage,
+    Account, BuildArtifact, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError,
+    GitHubGateway, Job, Repository, RepositoryPage, RepositorySort, RunStatus, SecretToken, Step,
+    Workflow, WorkflowRun, WorkflowRunPage,
 };
 
 const DEFAULT_BASE_URI: &str = "https://github.com";
@@ -237,6 +237,76 @@ impl GitHubGateway for OctocrabGateway {
 
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
+
+    async fn run_logs_archive(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        run_id: u64,
+    ) -> Result<Vec<u8>, GatewayError> {
+        let crab = user_client(token)?;
+        let bytes = crab
+            .actions()
+            .download_workflow_run_logs(owner, repository, octocrab::models::RunId::from(run_id))
+            .await
+            .map_err(map_error)?;
+
+        Ok(bytes.to_vec())
+    }
+
+    async fn list_artifacts(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        run_id: u64,
+    ) -> Result<Vec<BuildArtifact>, GatewayError> {
+        let crab = user_client(token)?;
+        let etagged = crab
+            .actions()
+            .list_workflow_run_artifacts(owner, repository, octocrab::models::RunId::from(run_id))
+            .send()
+            .await
+            .map_err(map_error)?;
+        let page = etagged
+            .value
+            .ok_or_else(|| GatewayError::Unexpected("artifact list was not modified".to_owned()))?;
+
+        Ok(page
+            .items
+            .into_iter()
+            .map(|artifact| BuildArtifact {
+                id: artifact.id.into_inner(),
+                name: artifact.name,
+                size_in_bytes: artifact.size_in_bytes as u64,
+                expired: artifact.expired,
+                download_url: Some(artifact.archive_download_url.to_string()),
+            })
+            .collect())
+    }
+
+    async fn download_artifact(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        artifact_id: u64,
+    ) -> Result<Vec<u8>, GatewayError> {
+        let crab = user_client(token)?;
+        let bytes = crab
+            .actions()
+            .download_artifact(
+                owner,
+                repository,
+                octocrab::models::ArtifactId::from(artifact_id),
+                octocrab::params::actions::ArchiveFormat::Zip,
+            )
+            .await
+            .map_err(map_error)?;
+
+        Ok(bytes.to_vec())
+    }
 }
 
 fn user_client(token: &SecretToken) -> Result<Octocrab, GatewayError> {
@@ -285,7 +355,7 @@ fn map_conclusion(conclusion: &Option<octocrab::models::workflows::Conclusion>) 
             Conclusion::TimedOut => "timed_out",
             _ => "unknown",
         }
-        .to_owned()
+            .to_owned()
     })
 }
 
