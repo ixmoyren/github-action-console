@@ -19,6 +19,39 @@ pub(super) fn default_store_path() -> std::io::Result<std::path::PathBuf> {
     Ok(dir.join("console.sqlite"))
 }
 
+/// 60% of the primary display's width by 40% of its height, centred on it.
+fn centered_window_bounds(cx: &AsyncApp) -> WindowBounds {
+    const WIDTH_FRACTION: f32 = 0.6;
+    const HEIGHT_FRACTION: f32 = 0.4;
+
+    let fallback = || {
+        WindowBounds::Windowed(Bounds::new(
+            Point {
+                x: px(0.0),
+                y: px(0.0),
+            },
+            Size {
+                width: px(1200.0),
+                height: px(760.0),
+            },
+        ))
+    };
+
+    let Some(display) = cx.update(|cx| cx.primary_display()) else {
+        return fallback();
+    };
+
+    let display_bounds = display.bounds();
+    let width = display_bounds.size.width * WIDTH_FRACTION;
+    let height = display_bounds.size.height * HEIGHT_FRACTION;
+    let origin = Point {
+        x: display_bounds.origin.x + (display_bounds.size.width - width) / 2.0,
+        y: display_bounds.origin.y + (display_bounds.size.height - height) / 2.0,
+    };
+
+    WindowBounds::Windowed(Bounds::new(origin, Size { width, height }))
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let info = AppInfo::from_build();
     let runtime = TokioRuntime::new()?;
@@ -46,8 +79,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let runtime = runtime.clone();
 
         cx.spawn(async move |cx| {
+            let window_bounds = centered_window_bounds(cx);
             cx.open_window(
                 WindowOptions {
+                    window_bounds: Some(window_bounds),
                     titlebar: Some(TitlebarOptions {
                         title: Some(labels::APP_TITLE.into()),
                         ..Default::default()

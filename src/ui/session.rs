@@ -121,6 +121,7 @@ impl AppView {
         .detach();
     }
     pub(super) fn start_login(&mut self, cx: &mut Context<Self>) {
+        self.login_step = LoginStep::DeviceFlow;
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
         let picker = self.picker.clone();
@@ -258,6 +259,7 @@ impl AppView {
 
             let _ = this.update(cx, |this, cx| {
                 this.auth = AuthState::LoggedOut { notice: None };
+                this.login_step = LoginStep::Home;
                 this.selected = None;
                 this.repos.clear();
                 this.repo_state = RepositoryListState::Idle;
@@ -276,7 +278,7 @@ impl AppView {
                     .items_center()
                     .gap_3()
                     .p_3()
-                    .child(Label::new(format!(
+                    .child(pickable(format!(
                         "{}：{}",
                         labels::LOGIN_LOGGED_IN_AS,
                         account.login
@@ -292,40 +294,121 @@ impl AppView {
         }
     }
     pub(super) fn login_page(&self, state: AuthState, cx: &mut Context<Self>) -> AnyElement {
-        let mut panel = div().flex().flex_col().items_center().gap_3();
+        let (show_back, content) = match self.login_step {
+            LoginStep::Home => (false, self.login_home(cx)),
+            LoginStep::PatEntry => (true, self.pat_entry(cx)),
+            LoginStep::DeviceFlow => (true, self.device_flow_page(&state, cx)),
+        };
 
-        match state {
-            AuthState::LoggedOut { notice } => {
-                panel = panel
-                    .children(notice.map(|problem| Label::new(notice_text(problem)).text_sm()))
+        let mut page = div().size_full().flex().flex_col();
+        if show_back {
+            page = page.child(
+                div().flex().flex_row().p_3().child(
+                    Button::new("back-to-login-home")
+                        .label(labels::LOGIN_PAT_BACK)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.login_step = LoginStep::Home;
+                            if let AuthState::LoggedOut { notice } = &mut this.auth {
+                                *notice = None;
+                            }
+                            cx.notify();
+                        })),
+                ),
+            );
+        }
+
+        page.child(
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(content),
+        )
+        .into_any_element()
+    }
+
+    /// The signed-out landing page: exactly two entry buttons, side by side.
+    fn login_home(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .child(
+                Button::new("start-login")
+                    .label(labels::LOGIN_START)
+                    .primary()
+                    .on_click(cx.listener(|this, _, _, cx| this.start_login(cx))),
+            )
+            .child(
+                Button::new("toggle-pat")
+                    .label(labels::LOGIN_PAT_BUTTON)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.login_step = LoginStep::PatEntry;
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// The Personal Access Token page: one field, one confirm button.
+    fn pat_entry(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut panel = div().flex().flex_col().items_center().gap_3();
+        if let AuthState::LoggedOut {
+            notice: Some(problem),
+        } = self.auth
+        {
+            panel = panel.child(Label::new(notice_text(problem)).text_sm());
+        }
+
+        panel
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(Input::new(&self.pat_input))
                     .child(
-                        Button::new("start-login")
-                            .label(labels::LOGIN_START)
+                        Button::new("submit-pat")
+                            .label(labels::LOGIN_PAT_SUBMIT_ARROW)
                             .primary()
-                            .on_click(cx.listener(|this, _, _, cx| this.start_login(cx))),
-                    );
-            }
-            AuthState::StartingDeviceFlow => {
-                panel = panel.child(Label::new(labels::LOGIN_STARTING));
-            }
+                            .on_click(cx.listener(|this, _, _, cx| this.submit_pat(cx))),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The device-flow page: waiting for GitHub, or the failure that ended it.
+    fn device_flow_page(&self, state: &AuthState, cx: &mut Context<Self>) -> AnyElement {
+        match state {
+            AuthState::StartingDeviceFlow => div()
+                .child(pickable(labels::LOGIN_STARTING))
+                .into_any_element(),
             AuthState::AwaitingAuthorization { start } => {
                 let code = start.user_code.clone();
                 let uri = start.verification_uri.clone();
-                panel = panel
-                    .child(Label::new(labels::LOGIN_INSTRUCTION))
-                    .child(Label::new(start.verification_uri.clone()))
-                    .child(Label::new(format!(
+
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_3()
+                    .child(pickable(labels::LOGIN_INSTRUCTION))
+                    .child(pickable(start.verification_uri.clone()))
+                    .child(pickable(format!(
                         "{}：{}",
                         labels::LOGIN_USER_CODE,
                         start.user_code
                     )))
-                    .child(Label::new(format!(
+                    .child(pickable(format!(
                         "{}：{}",
                         labels::LOGIN_EXPIRES_IN,
                         start.expires_in_secs
                     )))
-                    .child(Label::new(labels::LOGIN_WAITING))
-                    .child(Label::new(if self.copied {
+                    .child(pickable(labels::LOGIN_WAITING))
+                    .child(pickable(if self.copied {
                         labels::LOGIN_COPIED
                     } else {
                         ""
@@ -349,22 +432,19 @@ impl AppView {
                                         let _ = open::that(uri.clone());
                                     }),
                             ),
-                    );
+                    )
+                    .into_any_element()
             }
-            AuthState::ValidatingCredentials => {
-                panel = panel.child(Label::new(labels::LOGIN_VALIDATING));
-            }
-            AuthState::Authenticated { .. } => {}
+            AuthState::LoggedOut {
+                notice: Some(problem),
+            } => div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_3()
+                .child(Label::new(notice_text(*problem)).text_sm())
+                .into_any_element(),
+            _ => div().into_any_element(),
         }
-
-        panel
-            .child(Label::new(labels::LOGIN_PAT_TITLE))
-            .child(Input::new(&self.pat_input))
-            .child(
-                Button::new("submit-pat")
-                    .label(labels::LOGIN_PAT_SUBMIT)
-                    .on_click(cx.listener(|this, _, _, cx| this.submit_pat(cx))),
-            )
-            .into_any_element()
     }
 }

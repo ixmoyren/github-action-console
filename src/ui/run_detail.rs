@@ -158,16 +158,16 @@ impl AppView {
                 ),
         );
 
-        panel = panel.child(Label::new(labels::JOBS_TITLE));
+        panel = panel.child(pickable(labels::JOBS_TITLE));
         match self.jobs_state {
             LoadState::Loading if self.jobs.is_empty() => {
-                panel = panel.child(Label::new(labels::JOBS_LOADING));
+                panel = panel.child(pickable(labels::JOBS_LOADING));
             }
             LoadState::Failed(problem) => {
                 panel = panel.child(Label::new(problem_text(problem)).text_sm());
             }
             LoadState::Loaded if self.jobs.is_empty() => {
-                panel = panel.child(Label::new(labels::JOBS_EMPTY));
+                panel = panel.child(pickable(labels::JOBS_EMPTY));
             }
             _ => {}
         }
@@ -211,7 +211,7 @@ impl AppView {
                             .flex_row()
                             .items_center()
                             .gap_3()
-                            .child(Label::new(summary))
+                            .child(pickable(summary))
                             .child(
                                 Button::new(SharedString::from(format!("job-{id}")))
                                     .label(labels::JOB_VIEW_LOGS)
@@ -230,7 +230,7 @@ impl AppView {
         let query = self.log_input.read(cx).value().to_string();
         let filtered = log_text.as_deref().map(|log| filter_log_lines(log, &query));
 
-        panel = panel.child(Label::new(labels::LOGS_TITLE));
+        panel = panel.child(pickable(labels::LOGS_TITLE));
         panel = panel.child(Input::new(&self.log_input));
 
         match filtered {
@@ -256,11 +256,11 @@ impl AppView {
                     div()
                         .h(px(360.0))
                         .overflow_y_scrollbar()
-                        .child(Label::new(body)),
+                        .child(pickable(body)),
                 );
             }
             None if self.logs_state == LoadState::Loading => {
-                panel = panel.child(Label::new(labels::LOGS_LOADING));
+                panel = panel.child(pickable(labels::LOGS_LOADING));
             }
             None => {
                 if let LoadState::Failed(problem) = self.logs_state {
@@ -269,16 +269,16 @@ impl AppView {
             }
         }
 
-        panel = panel.child(Label::new(labels::ARTIFACTS_TITLE));
+        panel = panel.child(pickable(labels::ARTIFACTS_TITLE));
         match self.artifacts_state {
             LoadState::Loading if self.artifacts.is_empty() => {
-                panel = panel.child(Label::new(labels::ARTIFACTS_LOADING));
+                panel = panel.child(pickable(labels::ARTIFACTS_LOADING));
             }
             LoadState::Failed(problem) => {
                 panel = panel.child(Label::new(problem_text(problem)).text_sm());
             }
             LoadState::Loaded if self.artifacts.is_empty() => {
-                panel = panel.child(Label::new(labels::ARTIFACTS_EMPTY));
+                panel = panel.child(pickable(labels::ARTIFACTS_EMPTY));
             }
             _ => {}
         }
@@ -298,7 +298,7 @@ impl AppView {
                     .flex_row()
                     .items_center()
                     .gap_3()
-                    .child(Label::new(format!(
+                    .child(pickable(format!(
                         "{}｜{} B{}",
                         artifact.name, artifact.size_in_bytes, expired
                     )))
@@ -328,7 +328,7 @@ impl AppView {
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(Label::new(format!(
+                        .child(pickable(format!(
                             "{}（{} B）",
                             labels::DOWNLOAD_CONFIRM_TITLE,
                             size
@@ -357,10 +357,10 @@ impl AppView {
                 );
             }
             DownloadState::Downloading => {
-                panel = panel.child(Label::new(labels::DOWNLOADING));
+                panel = panel.child(pickable(labels::DOWNLOADING));
             }
             DownloadState::Saved(path) => {
-                panel = panel.child(Label::new(format!(
+                panel = panel.child(pickable(format!(
                     "{}：{}",
                     labels::DOWNLOAD_SAVED,
                     path.display()

@@ -26,9 +26,10 @@ pub const NOTICE_NETWORK: &str = "网络请求失败，请检查网络后重试�
 pub const NOTICE_UNEXPECTED: &str = "出现未预期的错误，请重试。";
 pub const NOTICE_MISSING_SCOPES: &str = "凭据权限不足。需要 repo + workflow（粗粒度 PAT），或 Contents: RW、Actions: RW、Workflows: RW（细粒度 PAT）。";
 
-pub const LOGIN_PAT_TITLE: &str = "或使用 Personal Access Token 登录";
-pub const LOGIN_PAT_PLACEHOLDER: &str = "粘贴 token";
-pub const LOGIN_PAT_SUBMIT: &str = "使用 token 登录";
+pub const LOGIN_PAT_BUTTON: &str = "使用 Personal Access Token 登录";
+pub const LOGIN_PAT_SUBMIT_ARROW: &str = "→";
+pub const LOGIN_PAT_BACK: &str = "←";
+pub const LOGIN_PAT_PLACEHOLDER: &str = "请输入 Personal Access Token";
 pub const LOGIN_VALIDATING: &str = "正在验证凭据…";
 
 pub const REPOSITORIES_TITLE: &str = "仓库";

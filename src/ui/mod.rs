@@ -48,9 +48,21 @@ pub(super) use crate::labels;
 pub(super) use crate::runtime::TokioRuntime;
 pub(super) use crate::store::Store;
 
-pub(crate) use shell::{notice_text, problem_text};
+pub(crate) use shell::{notice_text, pickable, problem_text};
 
 const RUN_POLL_SECONDS: u64 = 10;
+
+/// Which screen the signed-out flow is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum LoginStep {
+    /// The two entry buttons.
+    #[default]
+    Home,
+    /// The Personal Access Token entry screen.
+    PatEntry,
+    /// The device-flow screen: waiting for GitHub, or showing why it failed.
+    DeviceFlow,
+}
 
 /// Everything the view shares with the rest of the app, in one bundle so the
 /// constructor stays readable.
@@ -74,6 +86,7 @@ struct AppView {
     runtime: TokioRuntime,
     auth: AuthState,
     copied: bool,
+    login_step: LoginStep,
     pat_input: Entity<InputState>,
     search_input: Entity<InputState>,
     branch_input: Entity<InputState>,
@@ -160,6 +173,7 @@ impl AppView {
             runtime,
             auth: AuthState::LoggedOut { notice: None },
             copied: false,
+            login_step: LoginStep::Home,
             pat_input,
             search_input,
             branch_input,

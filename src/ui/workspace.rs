@@ -242,7 +242,7 @@ impl AppView {
                     .label(labels::WORKSPACE_BACK)
                     .on_click(cx.listener(|this, _, _, cx| this.leave_workspace(cx))),
             )
-            .child(Label::new(full_name.to_owned()))
+            .child(pickable(full_name.to_owned()))
             .child(tabs)
             .child(content)
             .into_any_element()
@@ -251,16 +251,16 @@ impl AppView {
         let mut panel = div().flex().flex_col().gap_2().children(
             self.workflows
                 .iter()
-                .map(|workflow| Label::new(workflow.name.clone())),
+                .map(|workflow| pickable(workflow.name.clone())),
         );
 
         match self.workflows_state {
-            LoadState::Loading => panel = panel.child(Label::new(labels::WORKFLOWS_LOADING)),
+            LoadState::Loading => panel = panel.child(pickable(labels::WORKFLOWS_LOADING)),
             LoadState::Failed(problem) => {
                 panel = panel.child(Label::new(problem_text(problem)).text_sm())
             }
             LoadState::Loaded if self.workflows.is_empty() => {
-                panel = panel.child(Label::new(labels::WORKFLOWS_EMPTY))
+                panel = panel.child(pickable(labels::WORKFLOWS_EMPTY))
             }
             _ => {}
         }
@@ -389,13 +389,13 @@ impl AppView {
         let mut list = div().flex().flex_col().gap_1().children(rows);
         match self.runs_state {
             LoadState::Loading if self.runs.is_empty() => {
-                list = list.child(Label::new(labels::RUNS_LOADING));
+                list = list.child(pickable(labels::RUNS_LOADING));
             }
             LoadState::Failed(problem) => {
                 list = list.child(Label::new(problem_text(problem)).text_sm());
             }
             LoadState::Loaded if visible.is_empty() => {
-                list = list.child(Label::new(labels::RUNS_EMPTY));
+                list = list.child(pickable(labels::RUNS_EMPTY));
             }
             _ => {}
         }

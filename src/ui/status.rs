@@ -131,12 +131,12 @@ impl AppView {
                     .flex()
                     .flex_row()
                     .gap_3()
-                    .child(Label::new(format!(
+                    .child(pickable(format!(
                         "{}：{}",
                         labels::STATUS_BAR_ACCOUNT,
                         account
                     )))
-                    .child(Label::new(rate)),
+                    .child(pickable(rate)),
             )
             .child(notices)
             .into_any_element()

@@ -30,7 +30,7 @@ pub(super) fn info_row(label: &'static str, value: &str) -> impl IntoElement {
         .items_center()
         .gap_2()
         .child(Label::new(label).text_sm())
-        .child(Label::new(value.to_owned()))
+        .child(pickable(value.to_owned()))
 }
 
 impl AppView {
@@ -42,7 +42,7 @@ impl AppView {
             .flex_col()
             .gap_1()
             .p_3()
-            .child(Label::new(labels::APP_TITLE))
+            .child(pickable(labels::APP_TITLE))
             .child(info_row(labels::LABEL_VERSION, self.info.version()))
             .child(info_row(
                 labels::LABEL_BUILD_TARGET,
@@ -52,17 +52,37 @@ impl AppView {
     }
 }
 
+/// Text the user can select and copy. IDs are handed out in render order, so
+/// they stay stable while a screen's element set is stable.
+pub(crate) fn pickable(text: impl Into<gpui_kit::SharedString>) -> gpui_kit::base::SelectableText {
+    gpui_kit::base::SelectableText::new(
+        PICKABLE_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        text,
+    )
+}
+
+/// Restart the id sequence. Called once at the top of `render`.
+pub(super) fn reset_pickable_ids() {
+    PICKABLE_NEXT.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+static PICKABLE_NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 impl Render for AppView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        reset_pickable_ids();
+        let signed_in = matches!(self.auth, AuthState::Authenticated { .. });
+
+        // Signed out: only the login view, centred, with no app chrome.
+        if !signed_in {
+            return self.login_page(self.auth.clone(), cx);
+        }
+
         let header = self.header();
         let account_row = self.account_row(cx);
-
-        let body = match self.auth.clone() {
-            AuthState::Authenticated { .. } => match self.selected.clone() {
-                Some(full_name) => self.workspace_shell(&full_name, cx),
-                None => self.repository_picker(cx),
-            },
-            other => self.login_page(other, cx),
+        let content = match self.selected.clone() {
+            Some(full_name) => self.workspace_shell(&full_name, cx),
+            None => self.repository_picker(cx),
         };
 
         div()
@@ -77,8 +97,9 @@ impl Render for AppView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(body),
+                    .child(content),
             )
             .child(self.status_bar(cx))
+            .into_any_element()
     }
 }

@@ -137,13 +137,13 @@ impl AppView {
 
         match self.repo_state {
             RepositoryListState::Loading if self.repos.is_empty() => {
-                list = list.child(Label::new(labels::REPOSITORIES_LOADING));
+                list = list.child(pickable(labels::REPOSITORIES_LOADING));
             }
             RepositoryListState::Failed(problem) => {
                 list = list.child(Label::new(problem_text(problem)).text_sm());
             }
             RepositoryListState::Loaded if visible.is_empty() => {
-                list = list.child(Label::new(labels::REPOSITORIES_EMPTY));
+                list = list.child(pickable(labels::REPOSITORIES_EMPTY));
             }
             _ => {}
         }
@@ -182,7 +182,7 @@ impl AppView {
             .flex_col()
             .gap_3()
             .p_3()
-            .child(Label::new(labels::REPOSITORIES_TITLE))
+            .child(pickable(labels::REPOSITORIES_TITLE))
             .child(Input::new(&self.search_input))
             .child(sort_row)
             .child(list)
