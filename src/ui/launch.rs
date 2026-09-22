@@ -157,7 +157,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         let view = cx.new(|cx| AppView::new(services, window, cx));
                         view.update(cx, |this, cx| {
                             this.wire(cx);
-                            this.restore(cx);
+                            this.restore(window, cx);
                         });
                         cx.new(|cx| Root::new(view, window, cx))
                     },

@@ -1,4 +1,5 @@
 use super::AppView;
+
 use super::*;
 
 pub(crate) fn notice_text(problem: AuthProblem) -> &'static str {
@@ -59,8 +60,17 @@ impl Render for AppView {
             self.window_title = Some(title);
         }
 
-        if !matches!(self.auth, AuthState::Authenticated { .. }) {
-            return self.login_page(self.auth.clone(), cx);
+        let signed_in = matches!(self.auth, AuthState::Authenticated { .. }) && !self.resume_prompt;
+        if !signed_in {
+            let login = self.login_page(self.auth.clone(), cx);
+            return div()
+                .relative()
+                .size_full()
+                .child(login)
+                // gpui-component's Root does not draw the dialog layer; the
+                // app view has to render it.
+                .children(Root::render_dialog_layer(window, cx))
+                .into_any_element();
         }
 
         let top_bar = div()
@@ -82,6 +92,7 @@ impl Render for AppView {
         };
 
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -95,6 +106,7 @@ impl Render for AppView {
                     .child(content),
             )
             .child(self.status_bar(cx))
+            .children(Root::render_dialog_layer(window, cx))
             .into_any_element()
     }
 }

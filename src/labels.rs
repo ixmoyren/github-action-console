@@ -107,3 +107,8 @@ pub const SETTINGS_PROXY_LABEL: &str = "代理地址";
 pub const SETTINGS_PROXY_PLACEHOLDER: &str = "例如 http://127.0.0.1:7890";
 pub const SETTINGS_SAVE: &str = "保存";
 pub const SETTINGS_CLOSE: &str = "关闭";
+
+pub const RESUME_TITLE: &str = "登录仍然有效";
+pub const RESUME_BODY: &str = "上次登录仍然有效，是否直接进入应用？";
+pub const RESUME_YES: &str = "是";
+pub const RESUME_NO: &str = "否";

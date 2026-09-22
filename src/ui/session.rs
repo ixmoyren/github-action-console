@@ -1,4 +1,8 @@
 use super::AppView;
+
+use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::dialog::DialogButtonProps;
+
 use super::settings::SettingsWindow;
 
 use super::*;
@@ -94,13 +98,14 @@ impl AppView {
             Self::load_workspace(gateway, manager, workspace, runtime, this, cx).await;
         }
     }
-    pub(super) fn restore(&mut self, cx: &mut Context<Self>) {
-        let gateway = self.gateway.clone();
+    pub(super) fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let manager = self.manager.clone();
-        let picker = self.picker.clone();
-        let workspace = self.workspace.clone();
         let runtime = self.runtime.clone();
-        cx.spawn(async move |this, cx| {
+        let view = cx.entity();
+
+        // Window-scoped task: it runs on the GPUI thread with the window in
+        // hand, which is the only context where gpui-kit dialogs can open.
+        cx.spawn_in(window, async move |this, cx| {
             let task = runtime.spawn({
                 let manager = manager.clone();
                 async move {
@@ -108,30 +113,58 @@ impl AppView {
                 }
             });
             if let Err(error) = task.await {
-                warn!(%error, "a background task did not finish");
+                warn!(%error, "the session restore task did not finish");
             }
 
             let state = manager.lock().await.state().clone();
-            let authenticated = matches!(state, AuthState::Authenticated { .. });
+            if !matches!(state, AuthState::Authenticated { .. }) {
+                if let Err(error) = this.update(cx, |this, cx| {
+                    this.auth = state;
+                    cx.notify();
+                }) {
+                    warn!(?error, "the view was gone before the update landed");
+                }
+                return;
+            }
+
+            info!("a stored session is still valid; asking the user");
             if let Err(error) = this.update(cx, |this, cx| {
                 this.auth = state;
+                this.resume_prompt = true;
                 cx.notify();
             }) {
                 warn!(?error, "the view was gone before the update landed");
-            };
+            }
 
-            if authenticated {
-                Self::load_repositories(
-                    &gateway, &manager, &picker, &workspace, &runtime, &this, cx,
-                )
-                .await;
-                let login = match manager.lock().await.state() {
-                    AuthState::Authenticated { account } => Some(account.login.clone()),
-                    _ => None,
-                };
-                if let Err(error) = this.update(cx, |this, cx| this.refresh_status_bar(login, cx)) {
-                    warn!(?error, "the view was gone before the update landed");
-                };
+            let accept = view.clone();
+            let decline = view.clone();
+            let opened = cx.update(|window, cx| {
+                window.open_alert_dialog(cx, move |alert, _window, _cx| {
+                    info!("resume dialog builder ran");
+                    let accept = accept.clone();
+                    let decline = decline.clone();
+                    alert
+                        .button_props(
+                            DialogButtonProps::default()
+                                .ok_text(labels::RESUME_YES)
+                                .cancel_text(labels::RESUME_NO),
+                        )
+                        .show_cancel(true)
+                        .title(labels::RESUME_TITLE)
+                        .description(pickable(labels::RESUME_BODY))
+                        .on_ok(move |_, _, cx| {
+                            accept.update(cx, |this, cx| this.enter_after_resume(cx));
+                            true
+                        })
+                        .on_cancel(move |_, _, cx| {
+                            decline.update(cx, |this, cx| this.decline_resume(cx));
+                            true
+                        })
+                });
+            });
+            match opened {
+                Ok(()) => info!("resume dialog handed to Root"),
+                Err(error) => warn!(%error, "could not open the resume dialog"),
             }
         })
         .detach();
@@ -286,6 +319,35 @@ impl AppView {
         })
         .detach();
     }
+    /// The user accepted the stored session: open the repository list.
+    pub(super) fn enter_after_resume(&mut self, cx: &mut Context<Self>) {
+        info!("resuming the stored session");
+        self.resume_prompt = false;
+
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let picker = self.picker.clone();
+        let workspace = self.workspace.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            Self::load_repositories(&gateway, &manager, &picker, &workspace, &runtime, &this, cx)
+                .await;
+            let login = match manager.lock().await.state() {
+                AuthState::Authenticated { account } => Some(account.login.clone()),
+                _ => None,
+            };
+            let _ = this.update(cx, |this, cx| this.refresh_status_bar(login, cx));
+        })
+        .detach();
+    }
+
+    /// The user declined the stored session: sign out and stay on the home page.
+    pub(super) fn decline_resume(&mut self, cx: &mut Context<Self>) {
+        info!("declining the stored session; signing out");
+        self.resume_prompt = false;
+        self.sign_out(cx);
+    }
+
     pub(super) fn sign_out(&mut self, cx: &mut Context<Self>) {
         let manager = self.manager.clone();
         let picker = self.picker.clone();
@@ -325,6 +387,7 @@ impl AppView {
             if let Err(error) = this.update(cx, |this, cx| {
                 this.auth = AuthState::LoggedOut { notice: None };
                 this.login_step = LoginStep::Home;
+                this.resume_prompt = false;
                 this.selected = None;
                 this.repos.clear();
                 this.repo_state = RepositoryListState::Idle;
