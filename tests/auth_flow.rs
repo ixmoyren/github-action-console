@@ -38,7 +38,7 @@ impl FakeGateway {
 
 #[async_trait]
 impl GitHubGateway for FakeGateway {
-    async fn start_device_flow(&self) -> Result<DeviceFlowStart, GatewayError> {
+    async fn start_device_flow(&self, _client_id: &str) -> Result<DeviceFlowStart, GatewayError> {
         self.start
             .lock()
             .unwrap()
@@ -50,6 +50,7 @@ impl GitHubGateway for FakeGateway {
 
     async fn poll_device_flow(
         &self,
+        _client_id: &str,
         _handle: &DeviceFlowHandle,
     ) -> Result<DeviceFlowPoll, GatewayError> {
         self.polls
@@ -252,7 +253,7 @@ async fn device_flow_pending_then_authorized_persists_token_and_account() {
     gateway.push_user(Ok(account("erin")));
     let mut manager = manager(gateway).await;
 
-    manager.start_device_flow().await;
+    manager.start_device_flow("Iv1.test").await;
     assert!(matches!(
         manager.state(),
         AuthState::AwaitingAuthorization { .. }
@@ -281,7 +282,7 @@ async fn expired_device_flow_returns_a_notice() {
     gateway.push_poll(Ok(DeviceFlowPoll::Expired));
     let mut manager = manager(gateway).await;
 
-    manager.start_device_flow().await;
+    manager.start_device_flow("Iv1.test").await;
     manager.poll_device_flow().await;
 
     assert_eq!(
@@ -299,7 +300,7 @@ async fn denied_device_flow_returns_a_notice() {
     gateway.push_poll(Ok(DeviceFlowPoll::Denied));
     let mut manager = manager(gateway).await;
 
-    manager.start_device_flow().await;
+    manager.start_device_flow("Iv1.test").await;
     manager.poll_device_flow().await;
 
     assert_eq!(
@@ -316,7 +317,7 @@ async fn device_flow_unavailable_returns_a_notice() {
     gateway.push_start(Err(GatewayError::DeviceFlowUnavailable));
     let mut manager = manager(gateway).await;
 
-    manager.start_device_flow().await;
+    manager.start_device_flow("Iv1.test").await;
 
     assert_eq!(
         *manager.state(),
@@ -410,7 +411,7 @@ async fn pat_login_after_device_flow_unavailable_succeeds() {
     gateway.push_user(Ok(account("heidi")));
     let mut manager = manager(gateway).await;
 
-    manager.start_device_flow().await;
+    manager.start_device_flow("Iv1.test").await;
     assert_eq!(
         *manager.state(),
         AuthState::LoggedOut {
@@ -426,4 +427,34 @@ async fn pat_login_after_device_flow_unavailable_succeeds() {
             account: account("heidi")
         }
     );
+}
+
+#[tokio::test]
+async fn a_blank_client_id_is_reported_without_calling_github() {
+    let gateway = Arc::new(FakeGateway::default());
+    let mut manager = manager(gateway.clone()).await;
+
+    manager.start_device_flow("   ").await;
+
+    assert_eq!(
+        *manager.state(),
+        AuthState::LoggedOut {
+            notice: Some(AuthProblem::MissingClientId)
+        }
+    );
+    assert!(gateway.start.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_client_id_typed_by_the_user_starts_the_device_flow() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_start(Ok(device_start()));
+    let mut manager = manager(gateway).await;
+
+    manager.start_device_flow("  Iv1.typed  ").await;
+
+    assert!(matches!(
+        manager.state(),
+        AuthState::AwaitingAuthorization { .. }
+    ));
 }

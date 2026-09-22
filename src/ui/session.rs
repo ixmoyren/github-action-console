@@ -121,7 +121,8 @@ impl AppView {
         .detach();
     }
     pub(super) fn start_login(&mut self, cx: &mut Context<Self>) {
-        self.login_step = LoginStep::DeviceFlow;
+        let client_id = self.client_id_input.read(cx).value().to_string();
+        self.login_step = LoginStep::ClientIdEntry;
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
         let picker = self.picker.clone();
@@ -131,15 +132,20 @@ impl AppView {
             let task = runtime.spawn({
                 let manager = manager.clone();
                 async move {
-                    manager.lock().await.start_device_flow().await;
+                    manager.lock().await.start_device_flow(&client_id).await;
                 }
             });
             let _ = task.await;
 
             let state = manager.lock().await.state().clone();
+            let awaiting = matches!(state, AuthState::AwaitingAuthorization { .. });
             let _ = this.update(cx, |this, cx| {
                 this.auth = state;
                 this.copied = false;
+                // Only move off the client-id page once GitHub accepted it.
+                if awaiting {
+                    this.login_step = LoginStep::DeviceFlow;
+                }
                 cx.notify();
             });
 
@@ -297,6 +303,7 @@ impl AppView {
         let (show_back, content) = match self.login_step {
             LoginStep::Home => (false, self.login_home(cx)),
             LoginStep::PatEntry => (true, self.pat_entry(cx)),
+            LoginStep::ClientIdEntry => (true, self.client_id_entry(cx)),
             LoginStep::DeviceFlow => (true, self.device_flow_page(&state, cx)),
         };
 
@@ -336,10 +343,13 @@ impl AppView {
             .items_center()
             .gap_3()
             .child(
-                Button::new("start-login")
+                Button::new("open-client-id")
                     .label(labels::LOGIN_START)
                     .primary()
-                    .on_click(cx.listener(|this, _, _, cx| this.start_login(cx))),
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.login_step = LoginStep::ClientIdEntry;
+                        cx.notify();
+                    })),
             )
             .child(
                 Button::new("toggle-pat")
@@ -376,6 +386,35 @@ impl AppView {
                             .label(labels::LOGIN_PAT_SUBMIT_ARROW)
                             .primary()
                             .on_click(cx.listener(|this, _, _, cx| this.submit_pat(cx))),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The OAuth App client-id page: one field, one confirm button.
+    fn client_id_entry(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut panel = div().flex().flex_col().items_center().gap_3();
+        if let AuthState::LoggedOut {
+            notice: Some(problem),
+        } = self.auth
+        {
+            panel = panel.child(Label::new(notice_text(problem)).text_sm());
+        }
+
+        panel
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .w(px(360.0))
+                    .child(Input::new(&self.client_id_input).flex_1())
+                    .child(
+                        Button::new("submit-client-id")
+                            .label(labels::LOGIN_PAT_SUBMIT_ARROW)
+                            .primary()
+                            .on_click(cx.listener(|this, _, _, cx| this.start_login(cx))),
                     ),
             )
             .into_any_element()

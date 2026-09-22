@@ -10,6 +10,7 @@ const DEFAULT_HOST: &str = "github.com";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthProblem {
     DeviceFlowUnavailable,
+    MissingClientId,
     Expired,
     Denied,
     InvalidCredentials,
@@ -52,6 +53,8 @@ pub struct AuthManager {
     store: Store,
     state: AuthState,
     token: Option<SecretToken>,
+    /// The OAuth App client id the pending device flow was started with.
+    device_client_id: Option<String>,
 }
 
 impl AuthManager {
@@ -61,6 +64,7 @@ impl AuthManager {
             store,
             state: AuthState::LoggedOut { notice: None },
             token: None,
+            device_client_id: None,
         }
     }
 
@@ -121,10 +125,22 @@ impl AuthManager {
         }
     }
 
-    pub async fn start_device_flow(&mut self) {
+    /// Begin a device flow with the client id the user typed.
+    pub async fn start_device_flow(&mut self, client_id: &str) {
+        let client_id = client_id.trim().to_owned();
+        if client_id.is_empty() {
+            self.state = AuthState::LoggedOut {
+                notice: Some(AuthProblem::MissingClientId),
+            };
+            return;
+        }
+
         self.state = AuthState::StartingDeviceFlow;
-        match self.gateway.start_device_flow().await {
-            Ok(start) => self.state = AuthState::AwaitingAuthorization { start },
+        match self.gateway.start_device_flow(&client_id).await {
+            Ok(start) => {
+                self.device_client_id = Some(client_id);
+                self.state = AuthState::AwaitingAuthorization { start };
+            }
             Err(error) => {
                 self.state = AuthState::LoggedOut {
                     notice: Some(AuthProblem::from_gateway(&error)),
@@ -139,8 +155,11 @@ impl AuthManager {
             return;
         };
         let handle = start.handle.clone();
+        let Some(client_id) = self.device_client_id.clone() else {
+            return;
+        };
 
-        match self.gateway.poll_device_flow(&handle).await {
+        match self.gateway.poll_device_flow(&client_id, &handle).await {
             Ok(DeviceFlowPoll::Pending) | Ok(DeviceFlowPoll::SlowDown) => {}
             Ok(DeviceFlowPoll::Expired) => {
                 self.state = AuthState::LoggedOut {
@@ -207,6 +226,7 @@ impl AuthManager {
         }
         let _ = self.store.clear_accounts().await;
         self.token = None;
+        self.device_client_id = None;
         self.state = AuthState::LoggedOut { notice: None };
     }
 }

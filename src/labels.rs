@@ -19,6 +19,7 @@ pub const LOGIN_SIGN_OUT: &str = "登出";
 
 pub const NOTICE_DEVICE_FLOW_UNAVAILABLE: &str =
     "未配置 OAuth App 的 client_id，无法使用 Device Flow 登录。";
+pub const NOTICE_MISSING_CLIENT_ID: &str = "请输入 Client ID";
 pub const NOTICE_EXPIRED: &str = "授权码已过期，请重新登录。";
 pub const NOTICE_DENIED: &str = "授权已被拒绝。";
 pub const NOTICE_INVALID_CREDENTIALS: &str = "登录凭据已失效，请重新登录。";
@@ -26,6 +27,7 @@ pub const NOTICE_NETWORK: &str = "网络请求失败，请检查网络后重试�
 pub const NOTICE_UNEXPECTED: &str = "出现未预期的错误，请重试。";
 pub const NOTICE_MISSING_SCOPES: &str = "凭据权限不足。需要 repo + workflow（粗粒度 PAT），或 Contents: RW、Actions: RW、Workflows: RW（细粒度 PAT）。";
 
+pub const LOGIN_CLIENT_ID_PLACEHOLDER: &str = "请输入 Client ID";
 pub const LOGIN_PAT_BUTTON: &str = "使用 Personal Access Token 登录";
 pub const LOGIN_PAT_SUBMIT_ARROW: &str = "→";
 pub const LOGIN_PAT_BACK: &str = "←";

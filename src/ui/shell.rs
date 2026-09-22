@@ -4,6 +4,7 @@ use super::*;
 pub(crate) fn notice_text(problem: AuthProblem) -> &'static str {
     match problem {
         AuthProblem::DeviceFlowUnavailable => labels::NOTICE_DEVICE_FLOW_UNAVAILABLE,
+        AuthProblem::MissingClientId => labels::NOTICE_MISSING_CLIENT_ID,
         AuthProblem::Expired => labels::NOTICE_EXPIRED,
         AuthProblem::Denied => labels::NOTICE_DENIED,
         AuthProblem::InvalidCredentials => labels::NOTICE_INVALID_CREDENTIALS,

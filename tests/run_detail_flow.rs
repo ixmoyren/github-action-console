@@ -32,12 +32,13 @@ impl FakeGateway {
 
 #[async_trait]
 impl GitHubGateway for FakeGateway {
-    async fn start_device_flow(&self) -> Result<DeviceFlowStart, GatewayError> {
+    async fn start_device_flow(&self, _client_id: &str) -> Result<DeviceFlowStart, GatewayError> {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
 
     async fn poll_device_flow(
         &self,
+        _client_id: &str,
         _handle: &DeviceFlowHandle,
     ) -> Result<DeviceFlowPoll, GatewayError> {
         Err(GatewayError::Unexpected("unused".to_owned()))

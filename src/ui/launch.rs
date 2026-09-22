@@ -56,9 +56,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let info = AppInfo::from_build();
     let runtime = TokioRuntime::new()?;
     let store = runtime.block_on(Store::open(default_store_path()?))?;
-    let gateway: Arc<dyn GitHubGateway> = Arc::new(OctocrabGateway::new(
-        option_env!("GITHUB_CLIENT_ID").map(str::to_owned),
-    ));
+    let gateway: Arc<dyn GitHubGateway> = Arc::new(OctocrabGateway::new());
     let manager = Arc::new(Mutex::new(AuthManager::new(gateway.clone(), store.clone())));
     let picker = Arc::new(Mutex::new(RepositoryList::new(gateway.clone(), store)));
     let workspace = Arc::new(Mutex::new(Workspace::new()));

@@ -10,27 +10,25 @@ use super::{
 };
 
 const DEFAULT_BASE_URI: &str = "https://github.com";
+
+impl Default for OctocrabGateway {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 const DEVICE_FLOW_SCOPES: [&str; 2] = ["repo", "workflow"];
 const DEVICE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
 /// octocrab-backed gateway. Thin mapping only: no retry policy, no caching.
 pub struct OctocrabGateway {
-    client_id: Option<String>,
     base_uri: String,
 }
 
 impl OctocrabGateway {
-    pub fn new(client_id: Option<String>) -> Self {
+    pub fn new() -> Self {
         Self {
-            client_id,
             base_uri: DEFAULT_BASE_URI.to_owned(),
         }
-    }
-
-    fn client_id(&self) -> Result<&str, GatewayError> {
-        self.client_id
-            .as_deref()
-            .ok_or(GatewayError::DeviceFlowUnavailable)
     }
 
     /// Device flow must talk to the web host and ask for JSON.
@@ -46,8 +44,7 @@ impl OctocrabGateway {
 
 #[async_trait::async_trait]
 impl GitHubGateway for OctocrabGateway {
-    async fn start_device_flow(&self) -> Result<DeviceFlowStart, GatewayError> {
-        let client_id = self.client_id()?;
+    async fn start_device_flow(&self, client_id: &str) -> Result<DeviceFlowStart, GatewayError> {
         let crab = self.device_flow_client()?;
         let codes: DeviceCodes = crab
             .authenticate_as_device(
@@ -68,9 +65,9 @@ impl GitHubGateway for OctocrabGateway {
 
     async fn poll_device_flow(
         &self,
+        client_id: &str,
         handle: &DeviceFlowHandle,
     ) -> Result<DeviceFlowPoll, GatewayError> {
-        let client_id = self.client_id()?;
         let crab = self.device_flow_client()?;
         let body = PollBody {
             client_id,

@@ -305,10 +305,12 @@ pub enum GatewayError {
 /// The single seam between the application and GitHub.
 #[async_trait]
 pub trait GitHubGateway: Send + Sync {
-    async fn start_device_flow(&self) -> Result<DeviceFlowStart, GatewayError>;
+    /// Begin a device-flow authorization for the given OAuth App client id.
+    async fn start_device_flow(&self, client_id: &str) -> Result<DeviceFlowStart, GatewayError>;
 
     async fn poll_device_flow(
         &self,
+        client_id: &str,
         handle: &DeviceFlowHandle,
     ) -> Result<DeviceFlowPoll, GatewayError>;
 

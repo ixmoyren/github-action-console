@@ -60,6 +60,8 @@ pub(super) enum LoginStep {
     Home,
     /// The Personal Access Token entry screen.
     PatEntry,
+    /// The OAuth App client-id entry screen.
+    ClientIdEntry,
     /// The device-flow screen: waiting for GitHub, or showing why it failed.
     DeviceFlow,
 }
@@ -88,6 +90,7 @@ struct AppView {
     copied: bool,
     login_step: LoginStep,
     pat_input: Entity<InputState>,
+    client_id_input: Entity<InputState>,
     search_input: Entity<InputState>,
     branch_input: Entity<InputState>,
     pat_subscription: Option<Subscription>,
@@ -158,6 +161,11 @@ impl AppView {
             state.set_placeholder(labels::RUNS_BRANCH_PLACEHOLDER, window, cx);
             state
         });
+        let client_id_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx);
+            state.set_placeholder(labels::LOGIN_CLIENT_ID_PLACEHOLDER, window, cx);
+            state
+        });
         let log_input = cx.new(|cx| {
             let mut state = InputState::new(window, cx);
             state.set_placeholder(labels::LOGS_SEARCH_PLACEHOLDER, window, cx);
@@ -175,6 +183,7 @@ impl AppView {
             copied: false,
             login_step: LoginStep::Home,
             pat_input,
+            client_id_input,
             search_input,
             branch_input,
             pat_subscription: None,
