@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use github_action_console::app::{AppProblem, RepositoryList, RepositoryListState};
 use github_action_console::github::{
     Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError, GitHubGateway,
-    Repository, RepositoryPage, RepositorySort, SecretToken,
+    Repository, RepositoryPage, RepositorySort, SecretToken, Workflow, WorkflowRunPage,
 };
 use github_action_console::store::Store;
 
@@ -55,6 +55,27 @@ impl GitHubGateway for FakeGateway {
             .unwrap()
             .pop_front()
             .unwrap_or(Err(GatewayError::Unexpected("no scripted page".to_owned())))
+    }
+
+    async fn list_workflows(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+    ) -> Result<Vec<Workflow>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn list_workflow_runs(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _workflow_id: Option<u64>,
+        _page: u32,
+        _per_page: u32,
+    ) -> Result<WorkflowRunPage, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
     }
 }
 

@@ -78,6 +78,27 @@ impl GitHubGateway for FakeGateway {
             "repository listing is not used in auth tests".to_owned(),
         ))
     }
+
+    async fn list_workflows(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+    ) -> Result<Vec<github_action_console::github::Workflow>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn list_workflow_runs(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _workflow_id: Option<u64>,
+        _page: u32,
+        _per_page: u32,
+    ) -> Result<github_action_console::github::WorkflowRunPage, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
 }
 
 fn device_start() -> DeviceFlowStart {

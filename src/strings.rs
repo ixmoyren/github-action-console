@@ -48,3 +48,21 @@ pub const WORKSPACE_COMING_SOON: &str = "即将推出。";
 
 pub const PROBLEM_RATE_LIMITED: &str = "已触发 GitHub 限流，请稍后重试。";
 pub const PROBLEM_NOT_FOUND: &str = "该仓库不存在或无权访问。";
+
+pub const WORKFLOWS_LOADING: &str = "正在加载工作流…";
+pub const WORKFLOWS_EMPTY: &str = "该仓库没有工作流。";
+pub const RUNS_LOADING: &str = "正在加载运行…";
+pub const RUNS_EMPTY: &str = "没有匹配的运行。";
+pub const RUNS_LOAD_MORE: &str = "加载更多运行";
+pub const RUNS_COLUMN_STATUS: &str = "状态";
+pub const RUNS_COLUMN_NAME: &str = "名称";
+pub const RUNS_COLUMN_BRANCH: &str = "分支";
+pub const RUNS_COLUMN_EVENT: &str = "事件";
+pub const RUNS_COLUMN_ACTOR: &str = "触发者";
+pub const RUNS_COLUMN_CREATED: &str = "时间";
+pub const RUNS_FILTER_ALL: &str = "全部";
+pub const RUNS_FILTER_RUNNING: &str = "进行中";
+pub const RUNS_FILTER_COMPLETED: &str = "已完成";
+pub const RUNS_FILTER_WORKFLOW_ALL: &str = "全部工作流";
+pub const RUNS_BRANCH_PLACEHOLDER: &str = "按分支过滤";
+pub const VALUE_MISSING: &str = "—";

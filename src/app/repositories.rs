@@ -16,7 +16,7 @@ pub enum AppProblem {
 }
 
 impl AppProblem {
-    fn from_gateway(error: &GatewayError) -> Self {
+    pub(crate) fn from_gateway(error: &GatewayError) -> Self {
         match error {
             GatewayError::Forbidden => Self::Forbidden,
             GatewayError::RateLimited => Self::RateLimited,

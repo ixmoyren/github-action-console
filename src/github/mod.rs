@@ -106,10 +106,131 @@ pub fn filter_repositories(repositories: &[Repository], query: &str) -> Vec<Repo
         .collect()
 }
 
-/// One page of repositories plus whether another page exists.#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// One page of repositories plus whether another page exists.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RepositoryPage {
     pub repositories: Vec<Repository>,
     pub has_more: bool,
+}
+
+/// A workflow defined in a repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Workflow {
+    pub id: u64,
+    pub name: String,
+    pub path: String,
+}
+
+/// GitHub's coarse run status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunStatus {
+    Queued,
+    InProgress,
+    Completed,
+    Unknown,
+}
+
+impl RunStatus {
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "queued" | "requested" | "pending" | "waiting" => Self::Queued,
+            "in_progress" => Self::InProgress,
+            "completed" => Self::Completed,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Queued => "排队中",
+            Self::InProgress => "进行中",
+            Self::Completed => "已完成",
+            Self::Unknown => "未知",
+        }
+    }
+
+    /// Whether the run is still moving, i.e. worth polling for.
+    pub fn is_running(self) -> bool {
+        matches!(self, Self::Queued | Self::InProgress)
+    }
+}
+
+/// One workflow run, reduced to what the console shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRun {
+    pub id: u64,
+    pub workflow_id: u64,
+    pub name: String,
+    pub status: RunStatus,
+    pub conclusion: Option<String>,
+    pub branch: Option<String>,
+    pub event: String,
+    pub actor: Option<String>,
+    pub created_at: Option<String>,
+}
+
+/// One page of runs plus whether another page exists.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WorkflowRunPage {
+    pub runs: Vec<WorkflowRun>,
+    pub has_more: bool,
+}
+
+/// Status buckets the runs view can filter on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RunStatusFilter {
+    #[default]
+    All,
+    Running,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RunFilter {
+    pub status: RunStatusFilter,
+    pub branch: Option<String>,
+    pub workflow_id: Option<u64>,
+}
+
+impl RunFilter {
+    pub fn matches(&self, run: &WorkflowRun) -> bool {
+        let status_ok = match self.status {
+            RunStatusFilter::All => true,
+            RunStatusFilter::Running => run.status.is_running(),
+            RunStatusFilter::Completed => !run.status.is_running(),
+        };
+        let branch_ok = match &self.branch {
+            None => true,
+            Some(branch) => run.branch.as_deref() == Some(branch.as_str()),
+        };
+        let workflow_ok = match self.workflow_id {
+            None => true,
+            Some(workflow_id) => run.workflow_id == workflow_id,
+        };
+        status_ok && branch_ok && workflow_ok
+    }
+}
+
+/// The single run filter shared by the runs view and its tests.
+pub fn filter_runs(runs: &[WorkflowRun], filter: &RunFilter) -> Vec<WorkflowRun> {
+    runs.iter()
+        .filter(|run| filter.matches(run))
+        .cloned()
+        .collect()
+}
+
+/// Whether any run is still moving.
+pub fn any_running(runs: &[WorkflowRun]) -> bool {
+    runs.iter().any(|run| run.status.is_running())
+}
+
+/// Split an `owner/name` repository into its two halves.
+pub fn split_full_name(full_name: &str) -> Option<(String, String)> {
+    let (owner, name) = full_name.split_once('/')?;
+    if owner.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some((owner.to_owned(), name.to_owned()))
 }
 
 #[derive(Debug, Error)]
@@ -149,4 +270,23 @@ pub trait GitHubGateway: Send + Sync {
         page: u32,
         per_page: u32,
     ) -> Result<RepositoryPage, GatewayError>;
+
+    async fn list_workflows(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+    ) -> Result<Vec<Workflow>, GatewayError>;
+
+    /// All runs in the repository, or the runs of one workflow when
+    /// `workflow_id` is set.
+    async fn list_workflow_runs(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        workflow_id: Option<u64>,
+        page: u32,
+        per_page: u32,
+    ) -> Result<WorkflowRunPage, GatewayError>;
 }

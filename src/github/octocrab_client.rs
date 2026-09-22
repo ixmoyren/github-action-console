@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError, GitHubGateway,
-    Repository, RepositoryPage, RepositorySort, SecretToken,
+    Repository, RepositoryPage, RepositorySort, RunStatus, SecretToken, Workflow, WorkflowRun,
+    WorkflowRunPage,
 };
 
 const DEFAULT_BASE_URI: &str = "https://github.com";
@@ -144,6 +145,62 @@ impl GitHubGateway for OctocrabGateway {
             has_more: page.next.is_some(),
         })
     }
+
+    async fn list_workflows(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+    ) -> Result<Vec<Workflow>, GatewayError> {
+        let crab = user_client(token)?;
+        let page = crab
+            .workflows(owner, repository)
+            .list()
+            .per_page(100u8)
+            .send()
+            .await
+            .map_err(map_error)?;
+
+        Ok(page
+            .items
+            .into_iter()
+            .map(|workflow| Workflow {
+                id: workflow.id.into_inner(),
+                name: workflow.name,
+                path: workflow.path,
+            })
+            .collect())
+    }
+
+    async fn list_workflow_runs(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        workflow_id: Option<u64>,
+        page: u32,
+        per_page: u32,
+    ) -> Result<WorkflowRunPage, GatewayError> {
+        let crab = user_client(token)?;
+        let handler = crab.workflows(owner, repository);
+        let builder = match workflow_id {
+            Some(id) => handler.list_runs(id.to_string()),
+            None => handler.list_all_runs(),
+        };
+
+        let page_number = page.max(1);
+        let page = builder
+            .per_page(per_page.clamp(1, 100) as u8)
+            .page(page_number)
+            .send()
+            .await
+            .map_err(map_error)?;
+
+        Ok(WorkflowRunPage {
+            runs: page.items.into_iter().map(map_run).collect(),
+            has_more: page.next.is_some(),
+        })
+    }
 }
 
 fn user_client(token: &SecretToken) -> Result<Octocrab, GatewayError> {
@@ -151,6 +208,21 @@ fn user_client(token: &SecretToken) -> Result<Octocrab, GatewayError> {
         .user_access_token(token.expose().to_owned())
         .build()
         .map_err(unexpected)
+}
+
+fn map_run(run: octocrab::models::workflows::Run) -> WorkflowRun {
+    WorkflowRun {
+        id: run.id.into_inner(),
+        workflow_id: run.workflow_id.into_inner(),
+        name: run.name,
+        status: RunStatus::parse(&run.status),
+        conclusion: run.conclusion,
+        branch: Some(run.head_branch),
+        event: run.event,
+        // octocrab's typed `Run` does not carry the triggering actor.
+        actor: None,
+        created_at: Some(run.created_at.to_rfc3339()),
+    }
 }
 
 #[derive(Serialize)]
