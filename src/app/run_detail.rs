@@ -1,3 +1,5 @@
+use tracing::{debug, info, warn};
+
 use crate::github::{GatewayError, GitHubGateway, Job, SecretToken, WorkflowRun, split_full_name};
 
 use super::workspace::LoadState;
@@ -101,13 +103,18 @@ impl RunDetail {
             return;
         };
 
+        debug!(run_id, "loading jobs");
         self.state = LoadState::Loading;
         match gateway.list_jobs(token, &owner, &repository, run_id).await {
             Ok(jobs) => {
+                info!(run_id, count = jobs.len(), "jobs loaded");
                 self.jobs = jobs;
                 self.state = LoadState::Loaded;
             }
-            Err(error) => self.state = failed(&error),
+            Err(error) => {
+                warn!(%error, run_id, "could not load jobs");
+                self.state = failed(&error);
+            }
         }
     }
 
@@ -116,13 +123,18 @@ impl RunDetail {
             return;
         };
 
+        debug!(job_id, "loading a job log");
         self.logs_state = LoadState::Loading;
         match gateway.job_logs(token, &owner, &repository, job_id).await {
             Ok(logs) => {
+                info!(job_id, bytes = logs.len(), "job log loaded");
                 self.logs = Some(logs);
                 self.logs_state = LoadState::Loaded;
             }
-            Err(error) => self.logs_state = failed(&error),
+            Err(error) => {
+                warn!(%error, job_id, "could not load the job log");
+                self.logs_state = failed(&error);
+            }
         }
     }
 }

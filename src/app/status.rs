@@ -1,3 +1,5 @@
+use tracing::{debug, warn};
+
 use crate::github::{GatewayError, GitHubGateway, RateLimit, SecretToken};
 use crate::labels;
 
@@ -101,8 +103,16 @@ impl Status {
 
     pub async fn refresh_rate_limit(&mut self, gateway: &dyn GitHubGateway, token: &SecretToken) {
         match gateway.rate_limit(token).await {
-            Ok(limit) => self.rate_limit = Some(limit),
+            Ok(limit) => {
+                debug!(
+                    remaining = limit.remaining,
+                    limit = limit.limit,
+                    "rate limit read"
+                );
+                self.rate_limit = Some(limit);
+            }
             Err(error) => {
+                warn!(%error, "could not read the rate limit");
                 self.rate_limit = None;
                 self.push(notice_from_gateway(&error));
             }

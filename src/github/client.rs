@@ -4,6 +4,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use super::{
+
     Account, BuildArtifact, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError,
     GitHubGateway, Job, RateLimit, Repository, RepositoryPage, RepositorySort, RunStatus,
     SecretToken, Step, Workflow, WorkflowRun, WorkflowRunPage,
@@ -118,9 +119,10 @@ impl GitHubGateway for OctocrabGateway {
         let page = crab
             .current()
             .list_repos_for_authenticated_user()
+            // GitHub rejects mixing `visibility`/`affiliation` with `type`,
+            // and the affiliation list already covers every repo we can see.
             .visibility("all")
             .affiliation("owner,collaborator,organization_member")
-            .type_("all")
             .sort(sort.as_str())
             .direction("desc")
             .per_page(per_page.clamp(1, 100) as u8)
@@ -427,7 +429,13 @@ fn unexpected(error: impl std::fmt::Display) -> GatewayError {
 }
 
 fn map_error(error: octocrab::Error) -> GatewayError {
-    match &error {
+    let mapped = classify(&error);
+    tracing::warn!(kind = %mapped, "GitHub request failed");
+    mapped
+}
+
+fn classify(error: &octocrab::Error) -> GatewayError {
+    match error {
         octocrab::Error::GitHub { source, .. } => match source.status_code.as_u16() {
             401 => GatewayError::Unauthorized,
             403 => GatewayError::RateLimited,

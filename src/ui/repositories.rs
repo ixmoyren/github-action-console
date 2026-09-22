@@ -16,7 +16,9 @@ impl AppView {
                     picker.lock().await.select(&full_name).await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             let task = runtime.spawn({
                 let workspace = workspace.clone();
@@ -25,7 +27,9 @@ impl AppView {
                     workspace.lock().await.enter(&full_name);
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             Self::load_workspace(&gateway, &manager, &workspace, &runtime, &this, cx).await;
         })
@@ -42,7 +46,9 @@ impl AppView {
                     picker.lock().await.leave_workspace().await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             let task = runtime.spawn({
                 let workspace = workspace.clone();
@@ -50,9 +56,11 @@ impl AppView {
                     workspace.lock().await.leave();
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
-            let _ = this.update(cx, |this, cx| {
+            if let Err(error) = this.update(cx, |this, cx| {
                 this.selected = None;
                 this.workflows.clear();
                 this.workflows_state = LoadState::Idle;
@@ -62,7 +70,9 @@ impl AppView {
                 this.runs_workflow_filter = None;
                 this.workspace_tab = WorkspaceTab::Workflows;
                 cx.notify();
-            });
+            }) {
+                warn!(?error, "the view was gone before the update landed");
+            };
         })
         .detach();
     }
@@ -82,7 +92,9 @@ impl AppView {
                     picker.lock().await.load_more(&token).await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             Self::refresh_picker(&picker, &this, cx).await;
         })
@@ -106,7 +118,9 @@ impl AppView {
                     guard.reload(&token).await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             Self::refresh_picker(&picker, &this, cx).await;
         })

@@ -17,7 +17,7 @@ impl AppView {
         let logs_state = guard.logs_state();
         drop(guard);
 
-        let _ = this.update(cx, |this, cx| {
+        if let Err(error) = this.update(cx, |this, cx| {
             this.open_run = open_run;
             this.run_html_url = html_url;
             this.jobs = jobs;
@@ -26,7 +26,9 @@ impl AppView {
             this.logs = logs;
             this.logs_state = logs_state;
             cx.notify();
-        });
+        }) {
+            warn!(?error, "the view was gone before the update landed");
+        };
     }
     pub(super) fn open_run_detail(&mut self, run: WorkflowRun, cx: &mut Context<Self>) {
         let gateway = self.gateway.clone();
@@ -47,7 +49,9 @@ impl AppView {
                     detail.lock().await.open(&repository, &run);
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             Self::refresh_detail(&detail, &this, cx).await;
 
@@ -62,14 +66,18 @@ impl AppView {
                     detail.lock().await.load_jobs(&*gateway, &token).await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             Self::refresh_detail(&detail, &this, cx).await;
 
-            let _ = this.update(cx, |this, cx| {
+            if let Err(error) = this.update(cx, |this, cx| {
                 this.artifacts_state = LoadState::Loading;
                 this.load_artifacts(cx);
-            });
+            }) {
+                warn!(?error, "the view was gone before the update landed");
+            };
         })
         .detach();
     }
@@ -83,9 +91,11 @@ impl AppView {
                     detail.lock().await.close();
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
-            let _ = this.update(cx, |this, cx| {
+            if let Err(error) = this.update(cx, |this, cx| {
                 this.open_run = None;
                 this.run_html_url = None;
                 this.jobs.clear();
@@ -98,7 +108,9 @@ impl AppView {
                 this.artifacts_state = LoadState::Idle;
                 this.download_state = DownloadState::Idle;
                 cx.notify();
-            });
+            }) {
+                warn!(?error, "the view was gone before the update landed");
+            };
         })
         .detach();
     }
@@ -114,7 +126,9 @@ impl AppView {
                     detail.lock().await.select_job(job_id);
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
             Self::refresh_detail(&detail, &this, cx).await;
 
             let token = { manager.lock().await.token() };
@@ -128,7 +142,9 @@ impl AppView {
                     detail.lock().await.load_logs(&*gateway, &token).await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
             Self::refresh_detail(&detail, &this, cx).await;
         })
         .detach();

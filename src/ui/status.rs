@@ -14,13 +14,15 @@ impl AppView {
         let notices = guard.notices().to_vec();
         drop(guard);
 
-        let _ = this.update(cx, |this, cx| {
+        if let Err(error) = this.update(cx, |this, cx| {
             this.status_account = account;
             this.status_remaining = remaining;
             this.status_reset_at = reset_at;
             this.notices = notices;
             cx.notify();
-        });
+        }) {
+            warn!(?error, "the view was gone before the update landed");
+        };
     }
     pub(super) fn refresh_status_bar(&mut self, login: Option<String>, cx: &mut Context<Self>) {
         let gateway = self.gateway.clone();
@@ -41,7 +43,9 @@ impl AppView {
                     }
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
             Self::refresh_status(&status, &this, cx).await;
         })
         .detach();
@@ -56,7 +60,9 @@ impl AppView {
                     status.lock().await.dismiss_all();
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
             Self::refresh_status(&status, &this, cx).await;
         })
         .detach();

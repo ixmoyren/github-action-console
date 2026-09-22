@@ -28,14 +28,16 @@ impl AppView {
             )
         };
 
-        let _ = this.update(cx, |this, cx| {
+        if let Err(error) = this.update(cx, |this, cx| {
             this.repo_state = state;
             this.repos = repos;
             this.repo_has_more = has_more;
             this.repo_sort = sort;
             this.selected = selected;
             cx.notify();
-        });
+        }) {
+            warn!(?error, "the view was gone before the update landed");
+        };
     }
     pub(super) async fn load_repositories(
         gateway: &Arc<dyn GitHubGateway>,
@@ -57,7 +59,9 @@ impl AppView {
                 picker.lock().await.restore_selection().await;
             }
         });
-        let _ = task.await;
+        if let Err(error) = task.await {
+            warn!(%error, "a background task did not finish");
+        }
 
         let task = runtime.spawn({
             let picker = picker.clone();
@@ -65,7 +69,9 @@ impl AppView {
                 picker.lock().await.reload(&token).await;
             }
         });
-        let _ = task.await;
+        if let Err(error) = task.await {
+            warn!(%error, "a background task did not finish");
+        }
 
         Self::refresh_picker(picker, this, cx).await;
 
@@ -79,7 +85,9 @@ impl AppView {
                     workspace.lock().await.enter(&full_name);
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             Self::load_workspace(gateway, manager, workspace, runtime, this, cx).await;
         }
@@ -97,14 +105,18 @@ impl AppView {
                     manager.lock().await.restore_session().await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             let state = manager.lock().await.state().clone();
             let authenticated = matches!(state, AuthState::Authenticated { .. });
-            let _ = this.update(cx, |this, cx| {
+            if let Err(error) = this.update(cx, |this, cx| {
                 this.auth = state;
                 cx.notify();
-            });
+            }) {
+                warn!(?error, "the view was gone before the update landed");
+            };
 
             if authenticated {
                 Self::load_repositories(
@@ -115,13 +127,16 @@ impl AppView {
                     AuthState::Authenticated { account } => Some(account.login.clone()),
                     _ => None,
                 };
-                let _ = this.update(cx, |this, cx| this.refresh_status_bar(login, cx));
+                if let Err(error) = this.update(cx, |this, cx| this.refresh_status_bar(login, cx)) {
+                    warn!(?error, "the view was gone before the update landed");
+                };
             }
         })
         .detach();
     }
     pub(super) fn start_login(&mut self, cx: &mut Context<Self>) {
         let client_id = self.client_id_input.read(cx).value().to_string();
+        info!("device-flow sign in requested");
         self.login_step = LoginStep::ClientIdEntry;
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
@@ -135,12 +150,14 @@ impl AppView {
                     manager.lock().await.start_device_flow(&client_id).await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             let state = manager.lock().await.state().clone();
             let awaiting = matches!(state, AuthState::AwaitingAuthorization { .. });
             let remaining = manager.lock().await.remaining_secs();
-            let _ = this.update(cx, |this, cx| {
+            if let Err(error) = this.update(cx, |this, cx| {
                 this.auth = state;
                 this.copied = false;
                 this.flow_remaining_secs = remaining;
@@ -149,7 +166,9 @@ impl AppView {
                     this.login_step = LoginStep::DeviceFlow;
                 }
                 cx.notify();
-            });
+            }) {
+                warn!(?error, "the view was gone before the update landed");
+            };
 
             // Poll while the authorization is pending. The UI owns the cadence.
             loop {
@@ -171,10 +190,12 @@ impl AppView {
                     waited += Duration::from_secs(1);
 
                     let remaining = manager.lock().await.remaining_secs();
-                    let _ = this.update(cx, |this, cx| {
+                    if let Err(error) = this.update(cx, |this, cx| {
                         this.flow_remaining_secs = remaining;
                         cx.notify();
-                    });
+                    }) {
+                        warn!(?error, "the view was gone before the update landed");
+                    };
                 }
 
                 let task = runtime.spawn({
@@ -183,17 +204,21 @@ impl AppView {
                         manager.lock().await.poll_device_flow().await;
                     }
                 });
-                let _ = task.await;
+                if let Err(error) = task.await {
+                    warn!(%error, "a background task did not finish");
+                }
 
                 let state = manager.lock().await.state().clone();
                 let remaining = manager.lock().await.remaining_secs();
                 let finished = !matches!(state, AuthState::AwaitingAuthorization { .. });
                 let authenticated = matches!(state, AuthState::Authenticated { .. });
-                let _ = this.update(cx, |this, cx| {
+                if let Err(error) = this.update(cx, |this, cx| {
                     this.auth = state;
                     this.flow_remaining_secs = remaining;
                     cx.notify();
-                });
+                }) {
+                    warn!(?error, "the view was gone before the update landed");
+                };
                 if finished {
                     if authenticated {
                         Self::load_repositories(
@@ -204,7 +229,11 @@ impl AppView {
                             AuthState::Authenticated { account } => Some(account.login.clone()),
                             _ => None,
                         };
-                        let _ = this.update(cx, |this, cx| this.refresh_status_bar(login, cx));
+                        if let Err(error) =
+                            this.update(cx, |this, cx| this.refresh_status_bar(login, cx))
+                        {
+                            warn!(?error, "the view was gone before the update landed");
+                        };
                     }
                     break;
                 }
@@ -226,14 +255,18 @@ impl AppView {
                     manager.lock().await.sign_in_with_token(&raw).await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             let state = manager.lock().await.state().clone();
             let authenticated = matches!(state, AuthState::Authenticated { .. });
-            let _ = this.update(cx, |this, cx| {
+            if let Err(error) = this.update(cx, |this, cx| {
                 this.auth = state;
                 cx.notify();
-            });
+            }) {
+                warn!(?error, "the view was gone before the update landed");
+            };
 
             if authenticated {
                 Self::load_repositories(
@@ -244,7 +277,9 @@ impl AppView {
                     AuthState::Authenticated { account } => Some(account.login.clone()),
                     _ => None,
                 };
-                let _ = this.update(cx, |this, cx| this.refresh_status_bar(login, cx));
+                if let Err(error) = this.update(cx, |this, cx| this.refresh_status_bar(login, cx)) {
+                    warn!(?error, "the view was gone before the update landed");
+                };
             }
         })
         .detach();
@@ -261,7 +296,9 @@ impl AppView {
                     manager.lock().await.sign_out().await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             let task = runtime.spawn({
                 let picker = picker.clone();
@@ -269,7 +306,9 @@ impl AppView {
                     picker.lock().await.leave_workspace().await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             let task = runtime.spawn({
                 let workspace = workspace.clone();
@@ -277,9 +316,11 @@ impl AppView {
                     workspace.lock().await.leave();
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
-            let _ = this.update(cx, |this, cx| {
+            if let Err(error) = this.update(cx, |this, cx| {
                 this.auth = AuthState::LoggedOut { notice: None };
                 this.login_step = LoginStep::Home;
                 this.selected = None;
@@ -287,7 +328,9 @@ impl AppView {
                 this.repo_state = RepositoryListState::Idle;
                 this.workspace_tab = WorkspaceTab::Workflows;
                 cx.notify();
-            });
+            }) {
+                warn!(?error, "the view was gone before the update landed");
+            };
         })
         .detach();
     }
@@ -424,6 +467,7 @@ impl AppView {
     /// Persist the proxy and point the gateway at it.
     pub(super) fn save_proxy(&mut self, cx: &mut Context<Self>) {
         let proxy = self.proxy_input.read(cx).value().to_string();
+        info!(proxy = %proxy.trim(), "saving the proxy setting");
         let store = self.store.clone();
         let gateway = self.gateway.clone();
         let runtime = self.runtime.clone();
@@ -439,16 +483,22 @@ impl AppView {
                     } else {
                         Some(cleaned)
                     };
-                    store.save_proxy(value.as_deref()).await.ok();
+                    if let Err(error) = store.save_proxy(value.as_deref()).await {
+                        warn!(%error, "could not persist the proxy setting");
+                    }
                     gateway.set_proxy(value);
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
-            let _ = this.update(cx, |this, cx| {
+            if let Err(error) = this.update(cx, |this, cx| {
                 this.settings_open = false;
                 cx.notify();
-            });
+            }) {
+                warn!(?error, "the view was gone before the update landed");
+            };
         })
         .detach();
     }

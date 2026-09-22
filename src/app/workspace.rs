@@ -1,3 +1,5 @@
+use tracing::{debug, info, warn};
+
 use crate::github::{
     GatewayError, GitHubGateway, RunFilter, RunStatusFilter, SecretToken, Workflow, WorkflowRun,
     any_running, split_full_name,
@@ -157,13 +159,18 @@ impl Workspace {
             return;
         };
 
+        debug!(repository = %repository, "loading workflows");
         self.workflows_state = LoadState::Loading;
         match gateway.list_workflows(token, &owner, &repository).await {
             Ok(workflows) => {
+                info!(count = workflows.len(), "workflows loaded");
                 self.workflows = workflows;
                 self.workflows_state = LoadState::Loaded;
             }
-            Err(error) => self.workflows_state = LoadState::failed(&error),
+            Err(error) => {
+                warn!(%error, repository = %repository, "could not load workflows");
+                self.workflows_state = LoadState::failed(&error);
+            }
         }
     }
 
@@ -185,12 +192,20 @@ impl Workspace {
             .await
         {
             Ok(page) => {
+                info!(
+                    count = page.runs.len(),
+                    running = crate::github::any_running(&page.runs),
+                    "runs loaded"
+                );
                 self.runs = page.runs;
                 self.runs_has_more = page.has_more;
                 self.runs_page = 1;
                 self.runs_state = LoadState::Loaded;
             }
-            Err(error) => self.runs_state = LoadState::failed(&error),
+            Err(error) => {
+                warn!(%error, "could not load runs");
+                self.runs_state = LoadState::failed(&error);
+            }
         }
     }
 
@@ -216,12 +231,16 @@ impl Workspace {
             .await
         {
             Ok(page) => {
+                debug!(count = page.runs.len(), page = next, "more runs loaded");
                 self.runs.extend(page.runs);
                 self.runs_has_more = page.has_more;
                 self.runs_page = next;
                 self.runs_state = LoadState::Loaded;
             }
-            Err(error) => self.runs_state = LoadState::failed(&error),
+            Err(error) => {
+                warn!(%error, page = next, "could not load more runs");
+                self.runs_state = LoadState::failed(&error);
+            }
         }
     }
 }

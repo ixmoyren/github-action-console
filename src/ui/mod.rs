@@ -33,6 +33,7 @@ pub(super) use gpui_kit::component::scroll::ScrollableElement as _;
 pub(super) use gpui_kit::component::{Root, Theme, label::Label};
 pub(super) use gpui_kit::*;
 pub(super) use tokio::sync::Mutex;
+pub(super) use tracing::{info, warn};
 
 pub(super) use crate::app::{
     AppProblem, AuthManager, AuthProblem, AuthState, DownloadState, Downloads, LoadState, Notice,

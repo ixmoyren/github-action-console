@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use tracing::{debug, info, warn};
+
 use crate::github::{BuildArtifact, GitHubGateway, SecretToken, split_full_name};
 
 use super::repositories::AppProblem;
@@ -161,6 +163,7 @@ impl Downloads {
             return;
         };
 
+        debug!(file = %file_name, "downloading");
         self.state = DownloadState::Downloading;
         let bytes = match kind {
             DownloadKind::RunLogs { run_id } => {
@@ -177,10 +180,19 @@ impl Downloads {
 
         match bytes {
             Ok(bytes) => match self.save(&file_name, &bytes) {
-                Ok(path) => self.state = DownloadState::Saved(path),
-                Err(_) => self.state = DownloadState::Failed(AppProblem::Unexpected),
+                Ok(path) => {
+                    info!(path = %path.display(), bytes = bytes.len(), "saved a download");
+                    self.state = DownloadState::Saved(path);
+                }
+                Err(error) => {
+                    warn!(%error, file = %file_name, "could not write the download");
+                    self.state = DownloadState::Failed(AppProblem::Unexpected);
+                }
             },
-            Err(error) => self.state = DownloadState::Failed(AppProblem::from_gateway(&error)),
+            Err(error) => {
+                warn!(%error, file = %file_name, "download failed");
+                self.state = DownloadState::Failed(AppProblem::from_gateway(&error));
+            }
         }
     }
 

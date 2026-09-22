@@ -19,7 +19,7 @@ impl AppView {
         let workflow_filter = guard.run_filter().workflow_id;
         drop(guard);
 
-        let _ = this.update(cx, |this, cx| {
+        if let Err(error) = this.update(cx, |this, cx| {
             this.workspace_tab = tab;
             this.workflows = workflows;
             this.workflows_state = workflows_state;
@@ -31,7 +31,9 @@ impl AppView {
             this.runs_workflow_filter = workflow_filter;
             this.poll_runs_if_needed(cx);
             cx.notify();
-        });
+        }) {
+            warn!(?error, "the view was gone before the update landed");
+        };
     }
     pub(super) async fn load_workspace(
         gateway: &Arc<dyn GitHubGateway>,
@@ -58,7 +60,9 @@ impl AppView {
                     .await;
             }
         });
-        let _ = task.await;
+        if let Err(error) = task.await {
+            warn!(%error, "a background task did not finish");
+        }
 
         let task = runtime.spawn({
             let gateway = gateway.clone();
@@ -68,7 +72,9 @@ impl AppView {
                 workspace.lock().await.reload_runs(&*gateway, &token).await;
             }
         });
-        let _ = task.await;
+        if let Err(error) = task.await {
+            warn!(%error, "a background task did not finish");
+        }
 
         Self::refresh_workspace(workspace, this, cx).await;
     }
@@ -85,7 +91,9 @@ impl AppView {
                     workspace.lock().await.set_tab(tab);
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
 
             if tab == WorkspaceTab::Runs {
                 let token = { manager.lock().await.token() };
@@ -97,7 +105,9 @@ impl AppView {
                             workspace.lock().await.reload_runs(&*gateway, &token).await;
                         }
                     });
-                    let _ = task.await;
+                    if let Err(error) = task.await {
+                        warn!(%error, "a background task did not finish");
+                    }
                 }
             }
 
@@ -126,7 +136,9 @@ impl AppView {
                         .await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
             Self::refresh_workspace(&workspace, &this, cx).await;
         })
         .detach();
@@ -151,7 +163,9 @@ impl AppView {
                     guard.reload_runs(&*gateway, &token).await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
             Self::refresh_workspace(&workspace, &this, cx).await;
         })
         .detach();
@@ -194,15 +208,19 @@ impl AppView {
                         workspace.lock().await.reload_runs(&*gateway, &token).await;
                     }
                 });
-                let _ = task.await;
+                if let Err(error) = task.await {
+                    warn!(%error, "a background task did not finish");
+                }
 
                 Self::refresh_workspace(&workspace, &this, cx).await;
             }
 
-            let _ = this.update(cx, |this, cx| {
+            if let Err(error) = this.update(cx, |this, cx| {
                 this.polling = false;
                 cx.notify();
-            });
+            }) {
+                warn!(?error, "the view was gone before the update landed");
+            };
         })
         .detach();
     }

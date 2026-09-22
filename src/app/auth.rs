@@ -1,5 +1,7 @@
 use std::sync::Arc;
+
 use std::time::{Duration, Instant};
+use tracing::{debug, info, warn};
 
 use crate::credentials;
 use crate::github::{Account, DeviceFlowPoll, GatewayError, GitHubGateway, SecretToken};
@@ -90,13 +92,16 @@ impl AuthManager {
 
     /// Try to resume a previous session from the keyring.
     pub async fn restore_session(&mut self) {
+        debug!("restoring a session");
         let account = match self.store.load_account().await {
             Ok(Some(account)) => account,
             Ok(None) => {
+                debug!("no stored account; starting signed out");
                 self.state = AuthState::LoggedOut { notice: None };
                 return;
             }
-            Err(_) => {
+            Err(error) => {
+                warn!(%error, "could not read the stored account");
                 self.state = AuthState::LoggedOut {
                     notice: Some(AuthProblem::Unexpected),
                 };
@@ -110,7 +115,8 @@ impl AuthManager {
                 self.state = AuthState::LoggedOut { notice: None };
                 return;
             }
-            Err(_) => {
+            Err(error) => {
+                warn!(%error, login = %account.login, "could not read the stored token");
                 self.state = AuthState::LoggedOut {
                     notice: Some(AuthProblem::Unexpected),
                 };
@@ -120,13 +126,18 @@ impl AuthManager {
 
         match self.gateway.current_user(&token).await {
             Ok(account) => {
-                let _ = self.store.save_account(&account, DEFAULT_HOST).await;
+                if let Err(error) = self.store.save_account(&account, DEFAULT_HOST).await {
+                    warn!(%error, "could not save the account");
+                }
                 self.token = Some(token);
                 self.state = AuthState::Authenticated { account };
             }
             Err(error) => {
-                if matches!(error, GatewayError::Unauthorized) {
-                    let _ = credentials::delete_token(&account.login);
+                warn!(problem = ?AuthProblem::from_gateway(&error), "the stored session is no longer usable");
+                if matches!(error, GatewayError::Unauthorized)
+                    && let Err(error) = credentials::delete_token(&account.login)
+                {
+                    warn!(%error, "could not clear the stored token");
                 }
                 self.state = AuthState::LoggedOut {
                     notice: Some(AuthProblem::from_gateway(&error)),
@@ -139,15 +150,21 @@ impl AuthManager {
     pub async fn start_device_flow(&mut self, client_id: &str) {
         let client_id = client_id.trim().to_owned();
         if client_id.is_empty() {
+            warn!("no client id was entered");
             self.state = AuthState::LoggedOut {
                 notice: Some(AuthProblem::MissingClientId),
             };
             return;
         }
 
+        debug!(client_id = %client_id, "starting a device flow");
         self.state = AuthState::StartingDeviceFlow;
         match self.gateway.start_device_flow(&client_id).await {
             Ok(start) => {
+                info!(
+                    expires_in_secs = start.expires_in_secs,
+                    "device flow started"
+                );
                 self.device_client_id = Some(client_id);
                 self.device_flow_deadline =
                     Some(Instant::now() + Duration::from_secs(start.expires_in_secs));
@@ -172,14 +189,18 @@ impl AuthManager {
         };
 
         match self.gateway.poll_device_flow(&client_id, &handle).await {
-            Ok(DeviceFlowPoll::Pending) | Ok(DeviceFlowPoll::SlowDown) => {}
+            Ok(DeviceFlowPoll::Pending) | Ok(DeviceFlowPoll::SlowDown) => {
+                debug!("device flow still pending");
+            }
             Ok(DeviceFlowPoll::Expired) => {
+                warn!("the device code expired before it was authorized");
                 self.device_flow_deadline = None;
                 self.state = AuthState::LoggedOut {
                     notice: Some(AuthProblem::Expired),
                 }
             }
             Ok(DeviceFlowPoll::Denied) => {
+                warn!("the device flow was denied");
                 self.device_flow_deadline = None;
                 self.state = AuthState::LoggedOut {
                     notice: Some(AuthProblem::Denied),
@@ -188,8 +209,13 @@ impl AuthManager {
             Ok(DeviceFlowPoll::Authorized(token)) => {
                 match self.gateway.current_user(&token).await {
                     Ok(account) => {
-                        let _ = credentials::store_token(&account.login, &token);
-                        let _ = self.store.save_account(&account, DEFAULT_HOST).await;
+                        info!(login = %account.login, "device flow authorized");
+                        if let Err(error) = credentials::store_token(&account.login, &token) {
+                            warn!(%error, "could not store the token in the keyring");
+                        }
+                        if let Err(error) = self.store.save_account(&account, DEFAULT_HOST).await {
+                            warn!(%error, "could not save the account");
+                        }
                         self.token = Some(token);
                         self.device_flow_deadline = None;
                         self.state = AuthState::Authenticated { account };
@@ -220,10 +246,16 @@ impl AuthManager {
         }
 
         self.state = AuthState::ValidatingCredentials;
+        debug!("validating a pasted personal access token");
         match self.gateway.current_user(&token).await {
             Ok(account) => {
-                let _ = credentials::store_token(&account.login, &token);
-                let _ = self.store.save_account(&account, DEFAULT_HOST).await;
+                info!(login = %account.login, "signed in with a personal access token");
+                if let Err(error) = credentials::store_token(&account.login, &token) {
+                    warn!(%error, "could not store the token in the keyring");
+                }
+                if let Err(error) = self.store.save_account(&account, DEFAULT_HOST).await {
+                    warn!(%error, "could not save the account");
+                }
                 self.token = Some(token);
                 self.state = AuthState::Authenticated { account };
             }
@@ -236,10 +268,15 @@ impl AuthManager {
     }
 
     pub async fn sign_out(&mut self) {
-        if let Ok(Some(account)) = self.store.load_account().await {
-            let _ = credentials::delete_token(&account.login);
+        info!("signing out");
+        if let Ok(Some(account)) = self.store.load_account().await
+            && let Err(error) = credentials::delete_token(&account.login)
+        {
+            warn!(%error, "could not clear the stored token");
         }
-        let _ = self.store.clear_accounts().await;
+        if let Err(error) = self.store.clear_accounts().await {
+            warn!(%error, "could not clear the accounts");
+        }
         self.token = None;
         self.device_client_id = None;
         self.device_flow_deadline = None;

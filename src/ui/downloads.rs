@@ -8,10 +8,12 @@ impl AppView {
         cx: &mut AsyncApp,
     ) {
         let state = { downloads.lock().await.state().clone() };
-        let _ = this.update(cx, |this, cx| {
+        if let Err(error) = this.update(cx, |this, cx| {
             this.download_state = state;
             cx.notify();
-        });
+        }) {
+            warn!(?error, "the view was gone before the update landed");
+        };
     }
     pub(super) fn load_artifacts(&mut self, cx: &mut Context<Self>) {
         let gateway = self.gateway.clone();
@@ -42,7 +44,7 @@ impl AppView {
                 }
             });
             let artifacts = task.await.ok().flatten();
-            let _ = this.update(cx, |this, cx| {
+            if let Err(error) = this.update(cx, |this, cx| {
                 match artifacts {
                     Some(artifacts) => {
                         this.artifacts = artifacts;
@@ -51,7 +53,9 @@ impl AppView {
                     None => this.artifacts_state = LoadState::Failed(AppProblem::Unexpected),
                 }
                 cx.notify();
-            });
+            }) {
+                warn!(?error, "the view was gone before the update landed");
+            };
         })
         .detach();
     }
@@ -85,7 +89,9 @@ impl AppView {
                         .await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
             Self::refresh_downloads(&downloads, &this, cx).await;
         })
         .detach();
@@ -132,7 +138,9 @@ impl AppView {
                         .await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
             Self::refresh_downloads(&downloads, &this, cx).await;
         })
         .detach();
@@ -164,7 +172,9 @@ impl AppView {
                         .await;
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
             Self::refresh_downloads(&downloads, &this, cx).await;
         })
         .detach();
@@ -179,7 +189,9 @@ impl AppView {
                     downloads.lock().await.cancel();
                 }
             });
-            let _ = task.await;
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
             Self::refresh_downloads(&downloads, &this, cx).await;
         })
         .detach();

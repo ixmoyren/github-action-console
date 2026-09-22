@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use tracing::{debug, info, warn};
+
 use crate::github::{GatewayError, GitHubGateway, Repository, RepositorySort, SecretToken};
 use crate::store::Store;
 
@@ -113,6 +115,7 @@ impl RepositoryList {
             .await
         {
             Ok(page) => {
+                info!(count = page.repositories.len(), "repositories loaded");
                 self.repositories = page.repositories;
                 self.has_more = page.has_more;
                 self.page = 1;
@@ -138,6 +141,11 @@ impl RepositoryList {
             .await
         {
             Ok(page) => {
+                debug!(
+                    count = page.repositories.len(),
+                    page = next,
+                    "more repositories loaded"
+                );
                 self.repositories.extend(page.repositories);
                 self.has_more = page.has_more;
                 self.page = next;
@@ -152,15 +160,20 @@ impl RepositoryList {
     /// Enter a repository and remember it for the next launch.
     pub async fn select(&mut self, full_name: &str) {
         self.selected = Some(full_name.to_owned());
-        let _ = self
+        if let Err(error) = self
             .store
             .save_preference(REPOSITORY_PREFERENCE, full_name)
-            .await;
+            .await
+        {
+            warn!(%error, "could not remember the selected repository");
+        }
     }
 
     pub async fn leave_workspace(&mut self) {
         self.selected = None;
-        let _ = self.store.clear_preference(REPOSITORY_PREFERENCE).await;
+        if let Err(error) = self.store.clear_preference(REPOSITORY_PREFERENCE).await {
+            warn!(%error, "could not clear the selected repository");
+        }
     }
 
     /// Load the remembered repository, if any.
