@@ -1,0 +1,331 @@
+# 多平台发布模板：Windows / macOS-Intel / macOS-Arm / Linux 一起构建，产物挂到 Release。
+#
+# 这份文件是**同一个模板的两面**：它既是本仓库自己的发布脚本，也是控制台里
+# 「发布模板」采用的那一份（`include_str!` 同一份文本，不复制第二份）。任何 Cargo
+# 仓库都能直接采用它：没有发布清单时按四个平台各构建一次；有
+# `.github/release-console.yml` 时以清单为准（目标 → 打包配置 → 产物形式）。
+#
+# 构建只产出"构建完成"与"产物可获取"两个事实；"已登记发布"由控制台里的显式动作
+# 写入。签名、公证、商店提交没有证书与账号，一律标注为模拟，绝不产出已完成的事实。
+name: Release target
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 发布目标名（如 web-arm），或 all
+        required: false
+        default: all
+      version:
+        description: 源码版本（tag 或分支）；留空则用当前 ref
+        required: false
+        default: ""
+      config:
+        description: 覆盖打包配置名；留空则用清单里该目标声明的配置
+        required: false
+        default: ""
+      package:
+        description: 产物形式（dmg / msi / pkg / tar.gz / zip）；留空则用清单里那份配置的
+        required: false
+        default: ""
+      publish:
+        description: 把这次构建的产物挂到一个 Release 上（tag 触发时总是挂）
+        required: false
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # 读清单（有的话）与 Cargo.toml，决定这次要构建哪些目标、用哪个 runner、产物叫什么。
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version || github.ref }}
+
+      - name: Plan the builds
+        id: plan
+        env:
+          TARGET: ${{ inputs.target }}
+          VERSION: ${{ inputs.version }}
+          CONFIG: ${{ inputs.config }}
+          PACKAGE: ${{ inputs.package }}
+          PUBLISH: ${{ inputs.publish }}
+          REF_NAME: ${{ github.ref_name }}
+          TAG_BUILD: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, sys, tomllib
+
+          # 构建对象的名字从 Cargo.toml 推：[[bin]] 名优先，退回包名。
+          with open("Cargo.toml", "rb") as handle:
+              cargo = tomllib.load(handle)
+          package = cargo.get("package") or {}
+          bins = cargo.get("bin") or []
+          binary = (bins[0].get("name") if bins else None) or package.get("name")
+          if not binary:
+              sys.exit("Cargo.toml 里既没有 [[bin]] 也没有 [package] name，不知道该构建什么")
+
+          manifest_path = pathlib.Path(".github/release-console.yml")
+          targets = {}
+          packaging = {}
+          if manifest_path.exists():
+              try:
+                  import yaml
+              except ModuleNotFoundError:
+                  subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "pyyaml"], check=True)
+                  import yaml
+              manifest = yaml.safe_load(manifest_path.read_text()) or {}
+              targets = manifest.get("targets") or {}
+              packaging = manifest.get("packaging") or {}
+
+          runners = {"macos": "macos-14", "windows": "windows-latest", "linux": "ubuntu-latest"}
+          triples = {
+              ("macos", "arm64"): "aarch64-apple-darwin",
+              ("macos", "x64"): "x86_64-apple-darwin",
+              ("windows", "x64"): "x86_64-pc-windows-msvc",
+              ("linux", "x64"): "x86_64-unknown-linux-gnu",
+          }
+
+          if targets:
+              # 有清单：以清单为准，一个发布目标一条。
+              wanted = (os.environ.get("TARGET") or "").strip() or "all"
+              selected = [name for name in targets if wanted in ("all", name)]
+              if not selected:
+                  sys.exit(f"清单里没有目标 {wanted}；可选：{', '.join(targets)}")
+
+              entries = []
+              for name in selected:
+                  target = targets[name]
+                  config_name = (os.environ.get("CONFIG") or "").strip() or target["packaging"]
+                  if config_name not in packaging:
+                      sys.exit(f"目标 {name} 引用了不存在的打包配置 {config_name}")
+                  config = packaging[config_name]
+                  platform = target["platform"]
+                  arch = target.get("arch", "x64")
+                  entries.append({
+                      "target": name,
+                      "platform": platform,
+                      "arch": arch,
+                      "runner": runners.get(platform, "ubuntu-latest"),
+                      # universal 的 macOS 目标在 job 里自己 lipo 两个架构。
+                      "triple": triples.get((platform, arch), triples.get((platform, "arm64"), "")),
+                      # 产物形式：控制台显式传的优先，其次清单里那份配置写的。
+                      "package": (os.environ.get("PACKAGE") or "").strip()
+                          or (config.get("inputs") or {}).get("package", "tar.gz"),
+                      "config": config_name,
+                      "simulated": ", ".join(target.get("simulated") or []) or "none",
+                  })
+          else:
+              # 没有清单：按四个平台各构建一次，模板开箱即用。
+              print("没有 .github/release-console.yml，按内建的四个平台构建")
+              wanted = (os.environ.get("TARGET") or "").strip() or "all"
+              buildable = [
+                  # 平台名就是目标名：macos-arm / macos-intel / windows / linux。
+                  ("macos-arm", "macos", "arm64", "dmg"),
+                  ("macos-intel", "macos", "x64", "dmg"),
+                  ("windows", "windows", "x64", "msi"),
+                  ("linux", "linux", "x64", "tar.gz"),
+              ]
+              selected = [entry for entry in buildable if wanted in ("all", entry[0])]
+              if not selected:
+                  sys.exit(f"没有目标 {wanted}；可选：{', '.join(entry[0] for entry in buildable)}")
+              entries = [{
+                  "target": name,
+                  "platform": platform,
+                  "arch": arch,
+                  "runner": runners[platform],
+                  "triple": triples[(platform, arch)],
+                  "package": (os.environ.get("PACKAGE") or "").strip() or package_form,
+                  "config": package_form,
+                  "simulated": "code-signing" if platform == "windows" else "none",
+              } for name, platform, arch, package_form in selected]
+
+          for entry in entries:
+              entry["binary"] = binary
+
+          # 版本号：dispatch 输入优先，其次 tag 名，最后退回 0.0.0。
+          version = (os.environ.get("VERSION") or "").strip() or os.environ.get("REF_NAME") or "0.0.0"
+          # 挂 Release：tag 触发时总是挂；手动触发时看 publish 输入。
+          publish = os.environ.get("TAG_BUILD") == "true" or (os.environ.get("PUBLISH") or "").lower() == "true"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"version={version}\n")
+              out.write(f"publish={'true' if publish else 'false'}\n")
+              out.write(f"matrix={json.dumps(entries)}\n")
+          print(f"binary={binary} version={version} publish={publish}")
+          for entry in entries:
+              print(entry)
+          PY
+
+  # 一个目标一个 job：任一目标失败都不影响其他目标（fail-fast: false）。
+  build:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      BINARY: ${{ matrix.binary }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      PACKAGE: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version || github.ref }}
+
+      - name: What this run is
+        run: |
+          echo "target=${{ matrix.target }} version=$VERSION config=${{ matrix.config }} package=$PACKAGE"
+          echo "simulated=${{ matrix.simulated }}"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # MAS 的 universal 包要在同一次运行里构建两个架构，所以 macOS 上两个
+          # target 都装上；其他平台只装自己的。
+          targets: ${{ matrix.platform == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.triple }}
+
+      # 这个客户端是 GUI 程序，Linux 上要先把窗口系统的开发库装上：wayland / X11 /
+      # xkbcommon / fontconfig，以及 bindgen 需要的 libclang。
+      - name: Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libxcb1-dev libxcb-randr0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxcb-xkb-dev libfontconfig1-dev libssl-dev
+
+      - name: Build
+        shell: bash
+        env:
+          GAC_PACKAGING_CONFIG: ${{ matrix.config }}
+        run: |
+          set -euo pipefail
+          # Windows 的产物带 .exe，别的平台不带。
+          BIN="$BINARY"
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            BIN="$BINARY.exe"
+          fi
+          if [ "${{ matrix.platform }}" = "macos" ] && [ "${{ matrix.arch }}" = "universal" ]; then
+            cargo build --release --target aarch64-apple-darwin
+            cargo build --release --target x86_64-apple-darwin
+            mkdir -p "build/universal"
+            lipo -create \
+              "target/aarch64-apple-darwin/release/$BIN" \
+              "target/x86_64-apple-darwin/release/$BIN" \
+              -output "build/universal/$BIN"
+            # 无头自检：产物跑得起来，并且报得出自己是哪个目标、哪份配置。不认这个
+            # 开关的二进制不算错，只是少一次自证。
+            ./"build/universal/$BIN" --build-info || echo "::warning::这个二进制不认 --build-info，跳过自检"
+          else
+            cargo build --release --target "${{ matrix.triple }}"
+            mkdir -p build
+            cp "target/${{ matrix.triple }}/release/$BIN" "build/$BIN"
+            ./"build/$BIN" --build-info || echo "::warning::这个二进制不认 --build-info，跳过自检"
+          fi
+          ls -l build
+
+      # ---- macOS：官网分发的 dmg（真实） / MAS 的未签名 pkg（真实构建，后续模拟）----
+      - name: Package dmg
+        if: matrix.platform == 'macos' && matrix.package == 'dmg'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="$BINARY-$VERSION-${{ matrix.target }}"
+          mkdir -p "dist/$NAME"
+          cp "build/$BINARY" "dist/$NAME/"
+          hdiutil create -volname "$NAME" -srcfolder "dist/$NAME" -ov -format UDZO "dist/$NAME.dmg"
+          echo "::notice::dmg built: dist/$NAME.dmg"
+
+      - name: Package unsigned pkg (Mac App Store)
+        if: matrix.platform == 'macos' && matrix.package == 'pkg'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="$BINARY-$VERSION-mas-unsigned"
+          mkdir -p "dist/root/usr/local/bin"
+          cp "build/universal/$BINARY" "dist/root/usr/local/bin/"
+          pkgbuild --root "dist/root" --identifier "com.example.$BINARY" \
+            --version "$VERSION" "dist/$NAME.pkg"
+          echo "::warning::[SIMULATED] 签名（codesign / productsign）、公证（notarytool）与 App Store Connect 上传未执行：无证书、无账号。"
+          echo "::notice::unsigned pkg built: dist/$NAME.pkg"
+
+      # ---- Windows：有 WiX 模板就出 msi（真实），否则退回便携 zip；签名一律模拟 ----
+      - name: Package msi
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $exe = "${{ env.BINARY }}.exe"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $built = "target\${{ matrix.triple }}\release\$exe"
+          if (Test-Path "packaging/windows/main.wxs") {
+            choco install wixtoolset --yes --no-progress
+            Copy-Item $built "dist\$exe"
+            $msi = "dist\${{ env.BINARY }}-${{ env.VERSION }}-${{ matrix.target }}.msi"
+            candle -dSourceDir="$PWD\dist" -dExeName="$exe" -dProductVersion="${{ env.VERSION }}" `
+              -dUpgradeCode="7f3d0f4c-0d5b-4a5e-9d1a-2f0f2c9a1b7e" `
+              -o dist\main.wixobj packaging\windows\main.wxs
+            light -ext WixUIExtension -o $msi dist\main.wixobj
+            Write-Host "::warning::[SIMULATED] signtool 代码签名未执行：无证书。"
+            Write-Host "::notice::msi built: $msi"
+          } else {
+            $zip = "dist\${{ env.BINARY }}-${{ env.VERSION }}-${{ matrix.target }}.zip"
+            Compress-Archive -Path $built -DestinationPath $zip
+            Write-Host "::warning::[SIMULATED] 没有 packaging/windows/main.wxs，退回便携 zip；代码签名未执行。"
+            Write-Host "::notice::zip built: $zip"
+          }
+
+      # ---- Linux：tar.gz ----
+      - name: Package tarball
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="$BINARY-$VERSION-${{ matrix.target }}"
+          mkdir -p "dist/$NAME"
+          cp "build/$BINARY" "dist/$NAME/"
+          tar -czf "dist/$NAME.tar.gz" -C dist "$NAME"
+          echo "::notice::tarball built: dist/$NAME.tar.gz"
+
+      # 构建产物：临时，会过期（CONTEXT.md 的"构建产物"）。
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-${{ needs.plan.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+
+  # 发布资产：tag 触发（或手动勾了 publish）时，把产物挂到该版本的 Release 上。
+  # 发布资产不会过期，这是长期留存的那一份。
+  release:
+    needs: [ plan, build ]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Attach assets to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release view "$VERSION" >/dev/null 2>&1 || gh release create "$VERSION" \
+            --title "$VERSION" --notes "由 Release target workflow 构建。签名、公证与商店提交标注为模拟。"
+          gh release upload "$VERSION" dist/* --clobber
+          gh release view "$VERSION" --json assets --jq '.assets[].name'

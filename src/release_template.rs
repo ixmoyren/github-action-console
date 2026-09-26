@@ -8,7 +8,7 @@
 pub const TEMPLATE_PATH: &str = ".github/workflows/release-target.yml";
 
 /// 模板原文，编译期从仓库里读进来。
-pub const TEMPLATE: &str = include_str!("../.github/workflows/release-target.yml");
+pub const TEMPLATE: &str = include_str!("../templates/github/workflows/release-target.yml");
 
 /// 给某个仓库的那一份：开头写上这是给谁生成的，正文一字不改。
 ///
