@@ -44,9 +44,9 @@ pub(super) use tokio::sync::Mutex;
 pub(super) use tracing::{info, warn};
 
 pub(super) use crate::app::{
-    AppProblem, AuthManager, AuthProblem, AuthState, DownloadState, Downloads, LoadState, Notice,
-    NoticeKind, RepositoryList, RepositoryListState, RunDetail, RunProblem, SaveProblem, Status,
-    Workspace, WorkspaceTab, notice_for,
+    AppProblem, AuthManager, AuthProblem, AuthState, CreateProblem, DownloadState, Downloads,
+    LoadState, Notice, NoticeKind, RepositoryList, RepositoryListState, RunDetail, RunProblem,
+    SaveProblem, Status, Workspace, WorkspaceTab, notice_for,
 };
 pub(super) use crate::app_info::AppInfo;
 pub(super) use crate::github::GitHubGateway;
@@ -58,6 +58,7 @@ pub(super) use crate::github::{
 pub(super) use crate::labels;
 pub(super) use crate::runtime::TokioRuntime;
 pub(super) use crate::store::Store;
+pub(super) use crate::workflow_draft::{DraftProblem, JobDraft, RUNNERS, WorkflowDraft};
 
 pub(crate) use shell::{notice_text, pickable, problem_text, reset_pickable_ids};
 
@@ -124,6 +125,12 @@ struct AppView {
     workflow_file_state: LoadState,
     yaml_editor: Entity<EditorState>,
     yaml_editor_text: Option<String>,
+    creating_workflow: bool,
+    draft_file_name: Entity<InputState>,
+    draft_name: Entity<InputState>,
+    draft_container: Entity<InputState>,
+    draft_runner: String,
+    draft_jobs: Vec<DraftJobRow>,
     runs: Vec<WorkflowRun>,
     runs_state: LoadState,
     runs_has_more: bool,
@@ -150,6 +157,13 @@ struct AppView {
     status_remaining: Option<u64>,
     status_reset_at: Option<String>,
     notices: Vec<Notice>,
+}
+
+/// One job of the new-workflow form: an input per field it asks for.
+struct DraftJobRow {
+    id: Entity<InputState>,
+    name: Entity<InputState>,
+    command: Entity<InputState>,
 }
 
 impl AppView {
@@ -200,6 +214,20 @@ impl AppView {
             state
         });
         let yaml_editor = cx.new(|cx| yaml_editor::yaml_editor_state(window, cx));
+        let draft_file_name = cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_FILE_HINT));
+        let draft_name = cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_NAME_HINT));
+        let draft_container =
+            cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_CONTAINER_HINT));
+        let draft_job_id = cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_JOB_ID_HINT));
+        let draft_job_name =
+            cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_JOB_NAME_HINT));
+        let draft_job_command =
+            cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_JOB_COMMAND_HINT));
+        let draft_jobs = vec![DraftJobRow {
+            id: draft_job_id,
+            name: draft_job_name,
+            command: draft_job_command,
+        }];
 
         let repo_view = cx.weak_entity();
         let repo_table = cx.new(move |cx| {
@@ -245,6 +273,12 @@ impl AppView {
             workflow_file_state: LoadState::Idle,
             yaml_editor,
             yaml_editor_text: None,
+            creating_workflow: false,
+            draft_file_name,
+            draft_name,
+            draft_container,
+            draft_runner: RUNNERS[0].to_owned(),
+            draft_jobs,
             runs: Vec::new(),
             runs_state: LoadState::Idle,
             runs_has_more: false,
@@ -273,4 +307,15 @@ impl AppView {
             notices: Vec::new(),
         }
     }
+}
+
+/// One field of the new-workflow form.
+fn draft_input(
+    window: &mut Window,
+    cx: &mut Context<InputState>,
+    placeholder: &'static str,
+) -> InputState {
+    let mut state = InputState::new(window, cx);
+    state.set_placeholder(placeholder, window, cx);
+    state
 }

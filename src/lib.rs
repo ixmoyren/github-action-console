@@ -6,4 +6,5 @@ pub mod labels;
 pub mod runtime;
 pub mod store;
 pub mod ui;
+pub mod workflow_draft;
 pub mod yaml;

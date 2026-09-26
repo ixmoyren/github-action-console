@@ -111,7 +111,7 @@ impl GitHubGateway for FakeGateway {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
 
-    async fn update_file(
+    async fn write_file(
         &self,
         _token: &SecretToken,
         _owner: &str,

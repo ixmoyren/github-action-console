@@ -142,14 +142,15 @@ pub struct FileContents {
 }
 
 /// A write to one repository file: the new text, the commit that carries it,
-/// and the revision the write starts from.
+/// and the revision the write starts from. A write without a revision creates
+/// the file instead of replacing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileWrite {
     pub path: String,
     pub contents: String,
     pub message: String,
     pub reference: String,
-    pub sha: String,
+    pub sha: Option<String>,
 }
 
 /// GitHub's coarse run status.
@@ -372,9 +373,9 @@ pub trait GitHubGateway: Send + Sync {
         path: &str,
     ) -> Result<FileContents, GatewayError>;
 
-    /// Replace a file's text on `reference`, as one commit. `sha` is the
-    /// revision the write starts from.
-    async fn update_file(
+    /// Create or replace a file on `reference`, as one commit: replacing names
+    /// the revision it starts from, creating leaves it empty.
+    async fn write_file(
         &self,
         token: &SecretToken,
         owner: &str,

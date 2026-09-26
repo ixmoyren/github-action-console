@@ -4,6 +4,7 @@ use crate::github::{
     FileWrite, GatewayError, GitHubGateway, RunFilter, RunStatusFilter, SecretToken, Workflow,
     WorkflowRun, any_running, split_full_name,
 };
+use crate::workflow_draft::{DraftProblem, WorkflowDraft};
 
 use super::repositories::AppProblem;
 
@@ -49,6 +50,22 @@ pub enum SaveProblem {
     /// The repository's default branch is unknown, so there is no branch to
     /// commit to.
     NoDefaultBranch,
+    /// GitHub refused the write.
+    Gateway(AppProblem),
+}
+
+/// Why the console could not create a new workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateProblem {
+    /// The form does not describe a workflow yet.
+    Draft(DraftProblem),
+    /// No repository is open.
+    NoRepository,
+    /// The repository's default branch is unknown, so there is no branch to
+    /// commit to.
+    NoDefaultBranch,
+    /// A workflow file with that name is already in the repository.
+    AlreadyExists,
     /// GitHub refused the write.
     Gateway(AppProblem),
 }
@@ -323,15 +340,86 @@ impl Workspace {
             path: workflow.path.clone(),
             contents: contents.to_owned(),
             reference,
-            sha,
+            sha: Some(sha),
         };
         gateway
-            .update_file(token, &owner, &repository, write)
+            .write_file(token, &owner, &repository, write)
             .await
             .map_err(|error| SaveProblem::Gateway(AppProblem::from_gateway(&error)))?;
 
         self.load_workflow_file(gateway, token).await;
         Ok(())
+    }
+
+    /// Write a new workflow file, then show it. The file's name is checked
+    /// against the repository first, so a draft cannot overwrite a workflow
+    /// that is already there.
+    pub async fn create_workflow(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        draft: &WorkflowDraft,
+    ) -> Result<(), CreateProblem> {
+        let yaml = draft.to_yaml().map_err(CreateProblem::Draft)?;
+        let path = draft.path().map_err(CreateProblem::Draft)?;
+        let Some((owner, repository)) = self.parts() else {
+            return Err(CreateProblem::NoRepository);
+        };
+        let Some(reference) = self.default_branch.clone() else {
+            return Err(CreateProblem::NoDefaultBranch);
+        };
+
+        match gateway
+            .file_contents(token, &owner, &repository, &path)
+            .await
+        {
+            Ok(_) => return Err(CreateProblem::AlreadyExists),
+            Err(GatewayError::NotFound) => {}
+            Err(error) => {
+                return Err(CreateProblem::Gateway(AppProblem::from_gateway(&error)));
+            }
+        }
+
+        info!(%path, %reference, "creating a workflow file");
+        let write = FileWrite {
+            message: format!("chore: 添加工作流 {path}"),
+            path: path.clone(),
+            contents: yaml,
+            reference,
+            sha: None,
+        };
+        gateway
+            .write_file(token, &owner, &repository, write)
+            .await
+            .map_err(|error| CreateProblem::Gateway(AppProblem::from_gateway(&error)))?;
+
+        self.load_workflows(gateway, token).await;
+        self.show_workflow_at(&path, gateway, token).await;
+        Ok(())
+    }
+
+    /// Select the workflow a path belongs to, if the repository has one. A file
+    /// the reload already put on screen is not read again.
+    async fn show_workflow_at(
+        &mut self,
+        path: &str,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+    ) {
+        let Some(workflow) = self
+            .workflows
+            .iter()
+            .find(|workflow| workflow.path == path)
+            .cloned()
+        else {
+            return;
+        };
+        if self.selected_workflow == Some(workflow.id) && self.workflow_file.is_some() {
+            return;
+        }
+
+        self.select_workflow(workflow.id);
+        self.load_workflow_file(gateway, token).await;
     }
 
     /// Trigger the selected workflow on the repository's default branch.

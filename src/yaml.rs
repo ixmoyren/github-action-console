@@ -230,7 +230,9 @@ fn classify(word: &str) -> TokenKind {
     }
 }
 
-fn is_number(word: &str) -> bool {
+/// Whether the word would be read as a number, which matters both when a
+/// workflow file is coloured and when one is written.
+pub(crate) fn is_number(word: &str) -> bool {
     !word.is_empty()
         && word.chars().any(|character| character.is_ascii_digit())
         && word.chars().all(|character| {

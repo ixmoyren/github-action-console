@@ -3,13 +3,14 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use github_action_console::app::{
-    AppProblem, LoadState, RunProblem, SaveProblem, Workspace, WorkspaceTab,
+    AppProblem, CreateProblem, LoadState, RunProblem, SaveProblem, Workspace, WorkspaceTab,
 };
 use github_action_console::github::{
     Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, FileContents, FileWrite,
     GatewayError, GitHubGateway, RepositoryPage, RepositorySort, RunStatus, RunStatusFilter,
     SecretToken, Workflow, WorkflowRun, WorkflowRunPage,
 };
+use github_action_console::workflow_draft::{DraftProblem, JobDraft, WorkflowDraft};
 
 #[derive(Default)]
 struct FakeGateway {
@@ -146,7 +147,7 @@ impl GitHubGateway for FakeGateway {
             )))
     }
 
-    async fn update_file(
+    async fn write_file(
         &self,
         _token: &SecretToken,
         _owner: &str,
@@ -275,6 +276,21 @@ fn run(
 
 fn page(runs: Vec<WorkflowRun>, has_more: bool) -> WorkflowRunPage {
     WorkflowRunPage { runs, has_more }
+}
+
+/// The form as the console fills it in for a new "nightly" workflow.
+fn draft(file_name: &str) -> WorkflowDraft {
+    WorkflowDraft {
+        file_name: file_name.to_owned(),
+        name: "Nightly".to_owned(),
+        runs_on: "ubuntu-latest".to_owned(),
+        container: Some("node:20-bullseye".to_owned()),
+        jobs: vec![JobDraft {
+            id: "build".to_owned(),
+            name: "Build".to_owned(),
+            command: "npm test".to_owned(),
+        }],
+    }
 }
 
 fn token() -> SecretToken {
@@ -407,10 +423,102 @@ async fn saving_a_workflow_file_commits_it_on_the_default_branch() {
     assert_eq!(writes[0].path, ".github/workflows/ci.yml");
     assert_eq!(writes[0].contents, "name: ci\non: push\n");
     assert_eq!(writes[0].reference, "main");
-    assert_eq!(writes[0].sha, "sha-ci");
+    assert_eq!(writes[0].sha.as_deref(), Some("sha-ci"));
     assert!(writes[0].message.contains(".github/workflows/ci.yml"));
     // The reload means the console now holds what the repository holds.
     assert_eq!(workspace.workflow_file(), Some("name: ci\non: push\n"));
+}
+
+#[tokio::test]
+async fn creating_a_workflow_pushes_the_generated_file_and_shows_it() {
+    let gateway = Arc::new(FakeGateway::default());
+    // The name is free, the write succeeds, and the list then holds it.
+    gateway.push_file(Err(GatewayError::NotFound));
+    gateway.push_write(Ok(()));
+    gateway.push_workflows(Ok(vec![workflow(9, "nightly")]));
+    gateway.push_file_text("name: Nightly\n", "sha-new");
+    let mut workspace = entered("octo/alpha");
+
+    let outcome = workspace
+        .create_workflow(&*gateway, &token(), &draft("nightly"))
+        .await;
+
+    assert_eq!(outcome, Ok(()));
+    let writes = gateway.writes();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, ".github/workflows/nightly.yml");
+    // A new file has no revision to start from.
+    assert_eq!(writes[0].sha, None);
+    assert_eq!(writes[0].reference, "main");
+    assert!(writes[0].contents.contains("name: Nightly\n"));
+    assert!(writes[0].contents.contains("runs-on: ubuntu-latest\n"));
+    assert!(
+        writes[0]
+            .contents
+            .contains("container: \"node:20-bullseye\"\n")
+    );
+    assert!(writes[0].contents.contains("- run: npm test\n"));
+    assert!(writes[0].message.contains(".github/workflows/nightly.yml"));
+    // The new workflow is selected, and its file is what the editor will show.
+    assert_eq!(workspace.selected_workflow_id(), Some(9));
+    assert_eq!(workspace.workflow_file(), Some("name: Nightly\n"));
+}
+
+#[tokio::test]
+async fn creating_a_workflow_that_already_exists_is_refused() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_file_text("name: Nightly\n", "sha-there");
+    let mut workspace = entered("octo/alpha");
+
+    let outcome = workspace
+        .create_workflow(&*gateway, &token(), &draft("nightly"))
+        .await;
+
+    assert_eq!(outcome, Err(CreateProblem::AlreadyExists));
+    assert!(gateway.writes().is_empty());
+}
+
+#[tokio::test]
+async fn a_draft_that_is_not_a_workflow_never_reaches_github() {
+    let gateway = Arc::new(FakeGateway::default());
+    let mut workspace = entered("octo/alpha");
+    let mut incomplete = draft("nightly");
+    incomplete.jobs.clear();
+
+    let outcome = workspace
+        .create_workflow(&*gateway, &token(), &incomplete)
+        .await;
+    assert_eq!(outcome, Err(CreateProblem::Draft(DraftProblem::NoJobs)));
+
+    let mut bad_name = draft("release/notes");
+    let outcome = workspace
+        .create_workflow(&*gateway, &token(), &bad_name)
+        .await;
+    assert_eq!(outcome, Err(CreateProblem::Draft(DraftProblem::FileName)));
+    bad_name.file_name = "nightly".to_owned();
+
+    bad_name.jobs[0].id = "1build".to_owned();
+    let outcome = workspace
+        .create_workflow(&*gateway, &token(), &bad_name)
+        .await;
+    assert_eq!(outcome, Err(CreateProblem::Draft(DraftProblem::JobId)));
+
+    assert!(gateway.file_requests().is_empty());
+    assert!(gateway.writes().is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_name_check_stops_the_workflow_before_it_is_written() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_file(Err(GatewayError::Transport("offline".to_owned())));
+    let mut workspace = entered("octo/alpha");
+
+    let outcome = workspace
+        .create_workflow(&*gateway, &token(), &draft("nightly"))
+        .await;
+
+    assert_eq!(outcome, Err(CreateProblem::Gateway(AppProblem::Network)));
+    assert!(gateway.writes().is_empty());
 }
 
 #[tokio::test]

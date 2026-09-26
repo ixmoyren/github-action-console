@@ -215,7 +215,7 @@ impl GitHubGateway for OctocrabGateway {
             .ok_or_else(|| GatewayError::Unexpected(format!("{path} is not a file")))
     }
 
-    async fn update_file(
+    async fn write_file(
         &self,
         token: &SecretToken,
         owner: &str,
@@ -223,12 +223,21 @@ impl GitHubGateway for OctocrabGateway {
         write: FileWrite,
     ) -> Result<(), GatewayError> {
         let crab = user_client(token)?;
-        crab.repos(owner, repository)
-            .update_file(write.path, write.message, write.contents, write.sha)
-            .branch(write.reference)
-            .send()
-            .await
-            .map_err(map_error)?;
+        let repos = crab.repos(owner, repository);
+        match write.sha {
+            Some(sha) => repos
+                .update_file(write.path, write.message, write.contents, sha)
+                .branch(write.reference)
+                .send()
+                .await
+                .map_err(map_error)?,
+            None => repos
+                .create_file(write.path, write.message, write.contents)
+                .branch(write.reference)
+                .send()
+                .await
+                .map_err(map_error)?,
+        };
 
         Ok(())
     }

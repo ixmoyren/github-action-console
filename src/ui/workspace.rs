@@ -273,6 +273,20 @@ impl AppView {
             .children(back)
             .child(Label::new(title).text_lg());
 
+        // The workflow page's one action: start a new workflow file.
+        let new_workflow = (self.workspace_tab == WorkspaceTab::Workflows).then(|| {
+            let (id, label) = if self.creating_workflow {
+                ("new-workflow-off", labels::WORKFLOW_NEW_CANCEL)
+            } else {
+                ("new-workflow-on", labels::WORKFLOW_NEW)
+            };
+            Button::new(id)
+                .label(label)
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_new_workflow(window, cx)))
+                .into_any_element()
+        });
+        let heading = heading.children(new_workflow);
+
         let mut header = div()
             .flex()
             .flex_row()
@@ -302,6 +316,8 @@ impl AppView {
     /// Show a workflow's file. Selecting is cheap; the file itself is fetched
     /// in the background afterwards.
     pub(super) fn select_workflow(&mut self, workflow_id: u64, cx: &mut Context<Self>) {
+        // Browsing away from the form means leaving it.
+        self.creating_workflow = false;
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
         let workspace = self.workspace.clone();
@@ -420,6 +436,145 @@ impl AppView {
         })
         .detach();
     }
+    /// Open or close the new-workflow form. Opening always starts blank.
+    pub(super) fn toggle_new_workflow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.creating_workflow {
+            self.creating_workflow = false;
+            cx.notify();
+            return;
+        }
+
+        self.reset_draft(window, cx);
+        self.creating_workflow = true;
+        cx.notify();
+    }
+
+    /// A blank form: no file name yet, the first runner, no container, one job.
+    fn reset_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft_file_name
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.draft_name
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.draft_container
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.draft_runner = RUNNERS[0].to_owned();
+
+        let job = self.new_draft_job(window, cx);
+        self.draft_jobs = vec![job];
+    }
+
+    fn new_draft_job(&self, window: &mut Window, cx: &mut Context<Self>) -> DraftJobRow {
+        DraftJobRow {
+            id: cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_JOB_ID_HINT)),
+            name: cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_JOB_NAME_HINT)),
+            command: cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_JOB_COMMAND_HINT)),
+        }
+    }
+
+    pub(super) fn add_draft_job(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let job = self.new_draft_job(window, cx);
+        self.draft_jobs.push(job);
+        cx.notify();
+    }
+
+    pub(super) fn remove_draft_job(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.draft_jobs.len() {
+            self.draft_jobs.remove(index);
+            cx.notify();
+        }
+    }
+
+    /// What the form says right now, before any of it reaches GitHub.
+    fn draft_from_form(&self, cx: &App) -> WorkflowDraft {
+        WorkflowDraft {
+            file_name: self.draft_file_name.read(cx).value().to_string(),
+            name: self.draft_name.read(cx).value().to_string(),
+            runs_on: self.draft_runner.clone(),
+            container: Some(self.draft_container.read(cx).value().to_string()),
+            jobs: self
+                .draft_jobs
+                .iter()
+                .map(|row| JobDraft {
+                    id: row.id.read(cx).value().to_string(),
+                    name: row.name.read(cx).value().to_string(),
+                    command: row.command.read(cx).value().to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Turn the form into a workflow file, push it, and show it in the editor.
+    pub(super) fn create_workflow(&mut self, cx: &mut Context<Self>) {
+        let draft = self.draft_from_form(cx);
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let workspace = self.workspace.clone();
+        let status = self.status.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                let workspace = workspace.clone();
+                let status = status.clone();
+                let token = token.clone();
+                async move {
+                    let outcome = workspace
+                        .lock()
+                        .await
+                        .create_workflow(&*gateway, &token, &draft)
+                        .await;
+                    let notice = match outcome {
+                        Ok(()) => Notice {
+                            kind: NoticeKind::Info,
+                            text: labels::WORKFLOW_NEW_PUSHED.to_owned(),
+                        },
+                        Err(CreateProblem::Draft(problem)) => Notice {
+                            kind: NoticeKind::Warning,
+                            text: draft_problem_text(problem).to_owned(),
+                        },
+                        Err(CreateProblem::NoRepository) => Notice {
+                            kind: NoticeKind::Warning,
+                            text: labels::WORKFLOW_NEW_NO_REPOSITORY.to_owned(),
+                        },
+                        Err(CreateProblem::NoDefaultBranch) => Notice {
+                            kind: NoticeKind::Warning,
+                            text: labels::WORKFLOW_NEW_NO_BRANCH.to_owned(),
+                        },
+                        Err(CreateProblem::AlreadyExists) => Notice {
+                            kind: NoticeKind::Warning,
+                            text: labels::WORKFLOW_NEW_EXISTS.to_owned(),
+                        },
+                        Err(CreateProblem::Gateway(problem)) => notice_for(problem),
+                    };
+                    status.lock().await.push(notice);
+                    outcome.is_ok()
+                }
+            });
+            let created = task.await.unwrap_or_else(|error| {
+                warn!(%error, "a background task did not finish");
+                false
+            });
+
+            Self::refresh_status(&status, &this, cx).await;
+            Self::refresh_workspace(&workspace, &this, cx).await;
+
+            if created
+                && let Err(error) = this.update(cx, |this, cx| {
+                    this.creating_workflow = false;
+                    cx.notify();
+                })
+            {
+                warn!(?error, "the view was gone before the update landed");
+            }
+        })
+        .detach();
+    }
+
     /// Commit what the editor holds, on the repository's default branch.
     pub(super) fn save_workflow_file(&mut self, cx: &mut Context<Self>) {
         let contents = self.yaml_editor.read(cx).value().to_string();
@@ -481,7 +636,11 @@ impl AppView {
             .flex_1()
             .min_h_0()
             .child(self.workflow_list_ui(cx))
-            .child(self.workflow_file_ui(cx))
+            .child(if self.creating_workflow {
+                self.workflow_draft_ui(cx)
+            } else {
+                self.workflow_file_ui(cx)
+            })
             .into_any_element()
     }
     /// The workflow the file viewer is showing.
@@ -561,6 +720,14 @@ impl AppView {
             .disabled(!self.workflow_is_edited(cx))
             .on_click(cx.listener(|this, _, _, cx| this.save_workflow_file(cx)));
 
+        // A new workflow is unaffected by the selected one's save and run.
+        let selected_actions = div()
+            .flex()
+            .flex_row()
+            .gap_2()
+            .child(save_button)
+            .child(run_button);
+
         div()
             .flex()
             .flex_col()
@@ -569,14 +736,7 @@ impl AppView {
             .h_full()
             .min_h_0()
             .child(list)
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .child(save_button)
-                    .child(run_button),
-            )
+            .when(!self.creating_workflow, |this| this.child(selected_actions))
             .into_any_element()
     }
     /// Whether the editor holds text the repository does not have yet.
@@ -654,6 +814,155 @@ impl AppView {
             .child(header)
             .child(body)
             .into_any_element()
+    }
+    /// The new-workflow form: what the file is called, where its jobs run, and
+    /// what they do. The file is only written when the form is complete.
+    fn workflow_draft_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+        let draft = self.draft_from_form(cx);
+        let problem = draft.to_yaml().err();
+
+        let mut form = div().flex().flex_col().gap_3();
+        form = form
+            .child(self.draft_field(labels::WORKFLOW_NEW_FILE, &self.draft_file_name))
+            .child(self.draft_field(labels::WORKFLOW_NEW_NAME, &self.draft_name))
+            .child(self.draft_runner_row(cx))
+            .child(self.draft_field(labels::WORKFLOW_NEW_CONTAINER, &self.draft_container))
+            .child(self.draft_jobs_ui(cx))
+            .child(self.draft_submit_ui(problem, cx));
+
+        div()
+            .id("workflow-draft-pane")
+            .flex()
+            .flex_col()
+            .gap_3()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(div().flex_1().min_h_0().overflow_y_scrollbar().child(form))
+            .test_support()
+            .into_any_element()
+    }
+    fn draft_field(&self, label: &'static str, input: &Entity<InputState>) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .max_w(px(420.))
+            .child(Label::new(label).text_sm())
+            .child(Input::new(input))
+            .into_any_element()
+    }
+    fn draft_runner_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut row = div().flex().flex_row().gap_2();
+        for runner in RUNNERS {
+            let mut button = Button::new(SharedString::from(format!("runner-{runner}")));
+            button = button.label(runner);
+            if self.draft_runner == runner {
+                button = button.primary();
+            }
+            row = row.child(button.on_click(cx.listener(move |this, _, _, cx| {
+                this.draft_runner = runner.to_owned();
+                cx.notify();
+            })));
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(Label::new(labels::WORKFLOW_NEW_RUNNER).text_sm())
+            .child(row)
+            .into_any_element()
+    }
+    fn draft_jobs_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+        let rows = self
+            .draft_jobs
+            .iter()
+            .enumerate()
+            .map(|(index, job)| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(div().w(px(120.)).child(Input::new(&job.id)))
+                    .child(div().w(px(140.)).child(Input::new(&job.name)))
+                    .child(div().flex_1().min_w_0().child(Input::new(&job.command)))
+                    .child(
+                        Button::new(SharedString::from(format!("draft-job-remove-{index}")))
+                            .label(labels::WORKFLOW_NEW_REMOVE_JOB)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.remove_draft_job(index, cx);
+                            })),
+                    )
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(Label::new(labels::WORKFLOW_NEW_JOBS).text_sm())
+                    .child(
+                        Button::new("draft-job-add")
+                            .label(labels::WORKFLOW_NEW_ADD_JOB)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.add_draft_job(window, cx);
+                            })),
+                    ),
+            )
+            // Column names for the rows below, so the three inputs are not
+            // left to their placeholders alone.
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(120.))
+                            .child(Label::new(labels::WORKFLOW_NEW_JOB_ID).text_xs()),
+                    )
+                    .child(
+                        div()
+                            .w(px(140.))
+                            .child(Label::new(labels::WORKFLOW_NEW_JOB_NAME).text_xs()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Label::new(labels::WORKFLOW_NEW_JOB_COMMAND).text_xs()),
+                    ),
+            )
+            .children(rows)
+            .into_any_element()
+    }
+    fn draft_submit_ui(&self, problem: Option<DraftProblem>, cx: &mut Context<Self>) -> AnyElement {
+        let mut submit = div().flex().flex_row().items_center().gap_3().child(
+            Button::new("draft-create")
+                .label(labels::WORKFLOW_NEW_CREATE)
+                .primary()
+                .disabled(problem.is_some())
+                .on_click(cx.listener(|this, _, _, cx| this.create_workflow(cx))),
+        );
+
+        if let Some(problem) = problem {
+            submit = submit.child(
+                Label::new(draft_problem_text(problem))
+                    .text_sm()
+                    .text_color(cx.theme().danger),
+            );
+        }
+
+        submit.into_any_element()
     }
     pub(super) fn runs_panel_ui(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.open_run.is_some() {
@@ -807,6 +1116,15 @@ impl AppView {
     }
 }
 
+/// What to tell the user about a form that is not a workflow yet.
+fn draft_problem_text(problem: DraftProblem) -> &'static str {
+    match problem {
+        DraftProblem::FileName => labels::WORKFLOW_NEW_BAD_FILE,
+        DraftProblem::JobId => labels::WORKFLOW_NEW_BAD_JOB,
+        DraftProblem::NoJobs => labels::WORKFLOW_NEW_NO_JOBS,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -950,6 +1268,37 @@ mod tests {
                 "name: ci\non: [push]\n",
                 "a later frame overwrote the edit"
             );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_new_workflow_button_opens_and_closes_the_form(cx: &mut TestAppContext) {
+        let (handle, _view, _editor) = workspace_page(cx);
+        let handle = handle.into();
+
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(
+                window.try_find("workflow-draft-pane").is_none(),
+                "the form is open before it was asked for"
+            );
+
+            window.click("new-workflow-on", cx);
+            window.draw(cx).clear(cx);
+            assert!(window.find("workflow-draft-pane").visible());
+
+            // Jobs can be added to the draft while it is open.
+            window.click("draft-job-add", cx);
+            window.draw(cx).clear(cx);
+            assert!(
+                window.try_find("draft-job-remove-1").is_some(),
+                "the second job row never appeared"
+            );
+
+            window.click("new-workflow-off", cx);
+            window.draw(cx).clear(cx);
+            assert!(window.try_find("workflow-draft-pane").is_none());
         })
         .unwrap();
     }
