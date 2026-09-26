@@ -32,11 +32,13 @@ pub(super) use gpui_kit::TestSupportExt as _;
 pub(super) use gpui_kit::assets::IconName;
 pub(super) use gpui_kit::base::input::{InputEvent, InputState};
 pub(super) use gpui_kit::component::button::{Button, ButtonVariants};
+pub(super) use gpui_kit::component::checkbox::Checkbox;
 pub(super) use gpui_kit::component::input::{Editor, EditorState, Input};
 pub(super) use gpui_kit::component::scroll::ScrollableElement as _;
+pub(super) use gpui_kit::component::select::{SearchableVec, Select, SelectState};
 pub(super) use gpui_kit::component::table::{Column, TableState};
 pub(super) use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Root, Theme, label::Label,
+    ActiveTheme as _, Disableable as _, IndexPath, Root, Theme, label::Label,
 };
 pub(super) use gpui_kit::prelude::FluentBuilder as _;
 pub(super) use gpui_kit::*;
@@ -45,8 +47,8 @@ pub(super) use tracing::{info, warn};
 
 pub(super) use crate::app::{
     AppProblem, AuthManager, AuthProblem, AuthState, CreateProblem, DownloadState, Downloads,
-    LoadState, Notice, NoticeKind, RepositoryList, RepositoryListState, RunDetail, RunProblem,
-    SaveProblem, Status, Workspace, WorkspaceTab, notice_for,
+    LoadState, Notice, NoticeKind, PushOutcome, RepositoryList, RepositoryListState, RunDetail,
+    RunProblem, SaveProblem, Status, Workspace, WorkspaceTab, notice_for,
 };
 pub(super) use crate::app_info::AppInfo;
 pub(super) use crate::github::GitHubGateway;
@@ -58,7 +60,11 @@ pub(super) use crate::github::{
 pub(super) use crate::labels;
 pub(super) use crate::runtime::TokioRuntime;
 pub(super) use crate::store::Store;
-pub(super) use crate::workflow_draft::{DraftProblem, JobDraft, RUNNERS, WorkflowDraft};
+pub(super) use crate::workflow_draft::Triggers;
+pub(super) use crate::workflow_draft::{
+    DraftProblem, JobDraft, RUNNER_GROUPS, SELF_HOSTED_GROUP, WorkflowDraft, branch_patterns,
+    runner_label, runner_versions,
+};
 
 pub(crate) use shell::{notice_text, pickable, problem_text, reset_pickable_ids};
 
@@ -123,14 +129,30 @@ struct AppView {
     selected_workflow_id: Option<u64>,
     workflow_file: Option<String>,
     workflow_file_state: LoadState,
+    runner_labels: Vec<String>,
     yaml_editor: Entity<EditorState>,
     yaml_editor_text: Option<String>,
     creating_workflow: bool,
+    previewing_draft: bool,
     draft_file_name: Entity<InputState>,
     draft_name: Entity<InputState>,
     draft_container: Entity<InputState>,
-    draft_runner: String,
+    draft_runner_os: Entity<SelectState<SearchableVec<SharedString>>>,
+    draft_runner_version: Entity<SelectState<SearchableVec<SharedString>>>,
+    /// The choices the two runner dropdowns were last filled with, so they are
+    /// only rebuilt when GitHub's runner labels change or the system does.
+    draft_os_options: Vec<SharedString>,
+    draft_version_options: Vec<SharedString>,
+    draft_manual: bool,
+    draft_push: bool,
+    draft_push_branches: Entity<InputState>,
+    draft_pull_request: bool,
+    draft_pull_request_branches: Entity<InputState>,
+    draft_schedule: bool,
+    draft_cron: Entity<InputState>,
     draft_jobs: Vec<DraftJobRow>,
+    preview_editor: Entity<EditorState>,
+    preview_editor_text: Option<String>,
     runs: Vec<WorkflowRun>,
     runs_state: LoadState,
     runs_has_more: bool,
@@ -218,6 +240,27 @@ impl AppView {
         let draft_name = cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_NAME_HINT));
         let draft_container =
             cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_CONTAINER_HINT));
+        let draft_cron = cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_CRON_HINT));
+        let draft_push_branches =
+            cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_BRANCHES_HINT));
+        let draft_pull_request_branches =
+            cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_BRANCHES_HINT));
+        let draft_runner_os = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(runner_groups(&[])),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+        let draft_runner_version = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(runner_versions_ui(RUNNER_GROUPS[0])),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
         let draft_job_id = cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_JOB_ID_HINT));
         let draft_job_name =
             cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_JOB_NAME_HINT));
@@ -228,6 +271,7 @@ impl AppView {
             name: draft_job_name,
             command: draft_job_command,
         }];
+        let preview_editor = cx.new(|cx| yaml_editor::yaml_editor_state(window, cx));
 
         let repo_view = cx.weak_entity();
         let repo_table = cx.new(move |cx| {
@@ -271,14 +315,28 @@ impl AppView {
             selected_workflow_id: None,
             workflow_file: None,
             workflow_file_state: LoadState::Idle,
+            runner_labels: Vec::new(),
             yaml_editor,
             yaml_editor_text: None,
             creating_workflow: false,
+            previewing_draft: false,
             draft_file_name,
             draft_name,
             draft_container,
-            draft_runner: RUNNERS[0].to_owned(),
+            draft_runner_os,
+            draft_runner_version,
+            draft_os_options: runner_groups(&[]),
+            draft_version_options: runner_versions_ui(RUNNER_GROUPS[0]),
+            draft_manual: true,
+            draft_push: false,
+            draft_push_branches,
+            draft_pull_request: false,
+            draft_pull_request_branches,
+            draft_schedule: false,
+            draft_cron,
             draft_jobs,
+            preview_editor,
+            preview_editor_text: None,
             runs: Vec::new(),
             runs_state: LoadState::Idle,
             runs_has_more: false,
@@ -318,4 +376,26 @@ fn draft_input(
     let mut state = InputState::new(window, cx);
     state.set_placeholder(placeholder, window, cx);
     state
+}
+
+/// The operating systems to choose from: the hosted ones, plus the repository's
+/// own runners when GitHub reported any.
+fn runner_groups(self_hosted: &[String]) -> Vec<SharedString> {
+    let mut groups: Vec<SharedString> = RUNNER_GROUPS
+        .iter()
+        .map(|group| SharedString::from(*group))
+        .collect();
+    if !self_hosted.is_empty() {
+        groups.push(SharedString::from(SELF_HOSTED_GROUP));
+    }
+    groups
+}
+
+/// The versions the chosen system offers. A self-hosted system's "versions" are
+/// the labels its runners answer to.
+fn runner_versions_ui(group: &str) -> Vec<SharedString> {
+    runner_versions(group)
+        .iter()
+        .map(|version| SharedString::from(*version))
+        .collect()
 }

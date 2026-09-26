@@ -3,20 +3,22 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use github_action_console::app::{
-    AppProblem, CreateProblem, LoadState, RunProblem, SaveProblem, Workspace, WorkspaceTab,
+    AppProblem, CreateProblem, LoadState, PushOutcome, RunProblem, SaveProblem, Workspace,
+    WorkspaceTab,
 };
 use github_action_console::github::{
     Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, FileContents, FileWrite,
     GatewayError, GitHubGateway, RepositoryPage, RepositorySort, RunStatus, RunStatusFilter,
     SecretToken, Workflow, WorkflowRun, WorkflowRunPage,
 };
-use github_action_console::workflow_draft::{DraftProblem, JobDraft, WorkflowDraft};
+use github_action_console::workflow_draft::{DraftProblem, JobDraft, Triggers, WorkflowDraft};
 
 #[derive(Default)]
 struct FakeGateway {
     workflows: Mutex<VecDeque<Result<Vec<Workflow>, GatewayError>>>,
     files: Mutex<VecDeque<Result<FileContents, GatewayError>>>,
     file_requests: Mutex<Vec<String>>,
+    runner_labels: Mutex<VecDeque<Result<Vec<String>, GatewayError>>>,
     writes: Mutex<Vec<FileWrite>>,
     write_results: Mutex<VecDeque<Result<(), GatewayError>>>,
     dispatches: Mutex<Vec<(u64, String)>>,
@@ -47,6 +49,10 @@ impl FakeGateway {
 
     fn push_write(&self, response: Result<(), GatewayError>) {
         self.write_results.lock().unwrap().push_back(response);
+    }
+
+    fn push_runner_labels(&self, response: Result<Vec<String>, GatewayError>) {
+        self.runner_labels.lock().unwrap().push_back(response);
     }
 
     fn writes(&self) -> Vec<FileWrite> {
@@ -144,6 +150,21 @@ impl GitHubGateway for FakeGateway {
             .pop_front()
             .unwrap_or(Err(GatewayError::Unexpected(
                 "no scripted workflow file".to_owned(),
+            )))
+    }
+
+    async fn runner_labels(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+    ) -> Result<Vec<String>, GatewayError> {
+        self.runner_labels
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Err(GatewayError::Unexpected(
+                "no scripted runner labels".to_owned(),
             )))
     }
 
@@ -285,6 +306,7 @@ fn draft(file_name: &str) -> WorkflowDraft {
         name: "Nightly".to_owned(),
         runs_on: "ubuntu-latest".to_owned(),
         container: Some("node:20-bullseye".to_owned()),
+        triggers: Triggers::default(),
         jobs: vec![JobDraft {
             id: "build".to_owned(),
             name: "Build".to_owned(),
@@ -443,7 +465,7 @@ async fn creating_a_workflow_pushes_the_generated_file_and_shows_it() {
         .create_workflow(&*gateway, &token(), &draft("nightly"))
         .await;
 
-    assert_eq!(outcome, Ok(()));
+    assert_eq!(outcome, Ok(PushOutcome::Created));
     let writes = gateway.writes();
     assert_eq!(writes.len(), 1);
     assert_eq!(writes[0].path, ".github/workflows/nightly.yml");
@@ -465,17 +487,24 @@ async fn creating_a_workflow_pushes_the_generated_file_and_shows_it() {
 }
 
 #[tokio::test]
-async fn creating_a_workflow_that_already_exists_is_refused() {
+async fn pushing_a_workflow_that_already_exists_replaces_it() {
     let gateway = Arc::new(FakeGateway::default());
     gateway.push_file_text("name: Nightly\n", "sha-there");
+    gateway.push_write(Ok(()));
+    gateway.push_workflows(Ok(vec![workflow(9, "nightly")]));
+    gateway.push_file_text("name: Nightly\n", "sha-next");
     let mut workspace = entered("octo/alpha");
 
     let outcome = workspace
         .create_workflow(&*gateway, &token(), &draft("nightly"))
         .await;
 
-    assert_eq!(outcome, Err(CreateProblem::AlreadyExists));
-    assert!(gateway.writes().is_empty());
+    assert_eq!(outcome, Ok(PushOutcome::Replaced));
+    let writes = gateway.writes();
+    assert_eq!(writes.len(), 1);
+    // The replacement names the revision it starts from, so nothing is lost.
+    assert_eq!(writes[0].sha.as_deref(), Some("sha-there"));
+    assert!(writes[0].message.contains("更新"));
 }
 
 #[tokio::test]
@@ -519,6 +548,39 @@ async fn a_failed_name_check_stops_the_workflow_before_it_is_written() {
 
     assert_eq!(outcome, Err(CreateProblem::Gateway(AppProblem::Network)));
     assert!(gateway.writes().is_empty());
+}
+
+#[tokio::test]
+async fn runner_labels_come_back_sorted_and_without_duplicates() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_runner_labels(Ok(vec![
+        "linux".to_owned(),
+        "x64".to_owned(),
+        "linux".to_owned(),
+        "  gpu  ".to_owned(),
+        "   ".to_owned(),
+    ]));
+    let mut workspace = entered("octo/alpha");
+
+    workspace.load_runner_labels(&*gateway, &token()).await;
+
+    assert_eq!(workspace.runner_labels_state(), LoadState::Loaded);
+    assert_eq!(workspace.runner_labels(), ["gpu", "linux", "x64"]);
+}
+
+#[tokio::test]
+async fn a_repository_that_will_not_share_its_runners_keeps_the_hosted_ones() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_runner_labels(Err(GatewayError::Forbidden));
+    let mut workspace = entered("octo/alpha");
+
+    workspace.load_runner_labels(&*gateway, &token()).await;
+
+    assert_eq!(
+        workspace.runner_labels_state(),
+        LoadState::Failed(AppProblem::Forbidden)
+    );
+    assert!(workspace.runner_labels().is_empty());
 }
 
 #[tokio::test]

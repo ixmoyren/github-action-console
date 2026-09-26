@@ -184,6 +184,28 @@ impl GitHubGateway for OctocrabGateway {
             .collect())
     }
 
+    async fn runner_labels(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+    ) -> Result<Vec<String>, GatewayError> {
+        let crab = user_client(token)?;
+        let page = crab
+            .actions()
+            .list_repo_self_hosted_runners(owner, repository)
+            .per_page(100u8)
+            .send()
+            .await
+            .map_err(map_error)?;
+
+        Ok(page
+            .items
+            .into_iter()
+            .flat_map(|runner| runner.labels.into_iter().map(|label| label.name))
+            .collect())
+    }
+
     async fn file_contents(
         &self,
         token: &SecretToken,

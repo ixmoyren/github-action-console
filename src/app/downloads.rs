@@ -202,6 +202,13 @@ impl Downloads {
         std::fs::write(&path, bytes)?;
         Ok(path)
     }
+
+    /// Write a file the console produced itself — a workflow draft, say — into
+    /// the same local directory artifacts go to. An existing file of the same
+    /// name is replaced.
+    pub fn save_file(&self, file_name: &str, contents: &str) -> std::io::Result<PathBuf> {
+        self.save(&sanitize(file_name), contents.as_bytes())
+    }
 }
 
 fn sanitize(name: &str) -> String {

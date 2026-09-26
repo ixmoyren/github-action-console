@@ -363,6 +363,15 @@ pub trait GitHubGateway: Send + Sync {
         repository: &str,
     ) -> Result<Vec<Workflow>, GatewayError>;
 
+    /// The labels a repository's self-hosted runners answer to. GitHub has no
+    /// equivalent list for its hosted images, so those come from the console.
+    async fn runner_labels(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+    ) -> Result<Vec<String>, GatewayError>;
+
     /// One file in the repository, e.g. the YAML of a workflow. `path` is
     /// repository-relative, like `.github/workflows/ci.yml`.
     async fn file_contents(

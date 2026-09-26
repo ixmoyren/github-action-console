@@ -10,4 +10,6 @@ pub use downloads::{DownloadKind, DownloadState, Downloads, PendingDownload};
 pub use repositories::{AppProblem, RepositoryList, RepositoryListState};
 pub use run_detail::RunDetail;
 pub use status::{MAX_NOTICES, Notice, NoticeKind, Status, notice_for, notice_from_gateway};
-pub use workspace::{CreateProblem, LoadState, RunProblem, SaveProblem, Workspace, WorkspaceTab};
+pub use workspace::{
+    CreateProblem, LoadState, PushOutcome, RunProblem, SaveProblem, Workspace, WorkspaceTab,
+};

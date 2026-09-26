@@ -90,6 +90,15 @@ impl GitHubGateway for FakeGateway {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
 
+    async fn runner_labels(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+    ) -> Result<Vec<String>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
     async fn write_file(
         &self,
         _token: &SecretToken,

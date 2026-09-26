@@ -11,19 +11,37 @@ use crate::yaml::is_number;
 const WORKFLOW_DIRECTORY: &str = ".github/workflows";
 
 /// The runner a draft starts from when the form leaves it unset.
-const DEFAULT_RUNNER: &str = "ubuntu-latest";
+pub const DEFAULT_RUNNER: &str = "ubuntu-latest";
 
 /// The action every generated job starts with.
 const CHECKOUT_STEP: &str = "actions/checkout@v4";
 
-/// The runners the "operating system" field offers.
-pub const RUNNERS: [&str; 5] = [
-    "ubuntu-latest",
-    "ubuntu-24.04",
-    "ubuntu-22.04",
-    "windows-latest",
-    "macos-latest",
-];
+/// The operating systems the runner form offers, mirroring the labels GitHub's
+/// runner-image documentation lists.
+pub const RUNNER_GROUPS: [&str; 3] = ["ubuntu", "windows", "macos"];
+
+/// The group the repository's own runner labels land in.
+pub const SELF_HOSTED_GROUP: &str = "自托管";
+
+/// The versions one operating system offers. The versions are the part after
+/// the dash, so `ubuntu` + `24.04` is the label `ubuntu-24.04`.
+pub fn runner_versions(group: &str) -> &'static [&'static str] {
+    match group {
+        "windows" => &["latest", "2025", "2022"],
+        "macos" => &["latest", "15", "14", "13"],
+        _ => &["latest", "24.04", "22.04", "24.04-arm", "22.04-arm"],
+    }
+}
+
+/// The `runs-on` label an operating system and version mean. A self-hosted
+/// label is used as it is: the repository's own runners name themselves.
+pub fn runner_label(group: &str, version: &str) -> String {
+    if group == SELF_HOSTED_GROUP {
+        version.to_owned()
+    } else {
+        format!("{group}-{version}")
+    }
+}
 
 /// Why a draft cannot become a workflow file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +53,63 @@ pub enum DraftProblem {
     JobId,
     /// The draft has no jobs, so it would not run anything.
     NoJobs,
+    /// No trigger is switched on, so nothing would ever start the workflow.
+    NoTrigger,
+    /// The scheduled trigger has no cron expression.
+    Schedule,
+}
+
+/// What starts the workflow: the console's own run button, a push, a pull
+/// request, or a cron schedule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Triggers {
+    /// `workflow_dispatch`: what the console's run button uses.
+    pub manual: bool,
+    pub push: bool,
+    /// Branch patterns a push has to match. Empty means every branch.
+    pub push_branches: Vec<String>,
+    pub pull_request: bool,
+    /// Branch patterns a pull request has to match. Empty means every branch.
+    pub pull_request_branches: Vec<String>,
+    /// A cron expression, when the workflow also runs on a schedule.
+    pub schedule: Option<String>,
+}
+
+impl Default for Triggers {
+    fn default() -> Self {
+        Self {
+            manual: true,
+            push: false,
+            push_branches: Vec::new(),
+            pull_request: false,
+            pull_request_branches: Vec::new(),
+            schedule: None,
+        }
+    }
+}
+
+/// The branch patterns a form field holds: comma separated, blank entries
+/// dropped, so `main, release/*` is two patterns and `  ` is none.
+pub fn branch_patterns(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|pattern| !pattern.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+impl Triggers {
+    /// Whether anything at all would start the workflow.
+    pub fn any(&self) -> bool {
+        self.manual || self.push || self.pull_request || self.schedule.is_some()
+    }
+
+    /// Whether a schedule was asked for without an expression to go with it.
+    fn schedule_is_blank(&self) -> bool {
+        self.schedule
+            .as_deref()
+            .is_some_and(|cron| cron.trim().is_empty())
+    }
 }
 
 /// One job in the draft.
@@ -61,6 +136,8 @@ pub struct WorkflowDraft {
     pub runs_on: String,
     /// The container image every job runs in, when the workflow uses one.
     pub container: Option<String>,
+    /// What starts the workflow.
+    pub triggers: Triggers,
     pub jobs: Vec<JobDraft>,
 }
 
@@ -71,6 +148,7 @@ impl Default for WorkflowDraft {
             name: String::new(),
             runs_on: DEFAULT_RUNNER.to_owned(),
             container: None,
+            triggers: Triggers::default(),
             jobs: vec![JobDraft::default()],
         }
     }
@@ -137,6 +215,12 @@ impl WorkflowDraft {
         if self.jobs.is_empty() {
             return Err(DraftProblem::NoJobs);
         }
+        if !self.triggers.any() {
+            return Err(DraftProblem::NoTrigger);
+        }
+        if self.triggers.schedule_is_blank() {
+            return Err(DraftProblem::Schedule);
+        }
         for job in &self.jobs {
             if !is_job_id(job.id.trim()) {
                 return Err(DraftProblem::JobId);
@@ -145,8 +229,23 @@ impl WorkflowDraft {
 
         let mut yaml = String::new();
         yaml.push_str(&format!("name: {}\n\n", scalar(&self.workflow_name())));
-        // A workflow the console made is meant to be run from the console.
-        yaml.push_str("on:\n  workflow_dispatch:\n\n");
+        yaml.push_str("on:\n");
+        if self.triggers.manual {
+            yaml.push_str("  workflow_dispatch:\n");
+        }
+        if self.triggers.push {
+            yaml.push_str("  push:\n");
+            yaml.push_str(&branches(&self.triggers.push_branches));
+        }
+        if self.triggers.pull_request {
+            yaml.push_str("  pull_request:\n");
+            yaml.push_str(&branches(&self.triggers.pull_request_branches));
+        }
+        if let Some(cron) = &self.triggers.schedule {
+            yaml.push_str("  schedule:\n");
+            yaml.push_str(&format!("    - cron: {}\n", scalar(cron.trim())));
+        }
+        yaml.push('\n');
         yaml.push_str("jobs:\n");
 
         for job in &self.jobs {
@@ -167,6 +266,21 @@ impl WorkflowDraft {
 
         Ok(yaml)
     }
+}
+
+/// The `branches:` line under a trigger, empty when the form asked for every
+/// branch.
+fn branches(patterns: &[String]) -> String {
+    if patterns.is_empty() {
+        return String::new();
+    }
+
+    let listed = patterns
+        .iter()
+        .map(|pattern| scalar(pattern.trim()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("    branches: [{listed}]\n")
 }
 
 /// Whether `id` can be a job key: a leading letter or underscore, then letters,
@@ -236,6 +350,7 @@ mod tests {
             name: "CI".to_owned(),
             runs_on: "ubuntu-latest".to_owned(),
             container: None,
+            triggers: Triggers::default(),
             jobs: vec![JobDraft {
                 id: "build".to_owned(),
                 name: "Build".to_owned(),
@@ -294,6 +409,127 @@ mod tests {
         draft.jobs.clear();
 
         assert_eq!(draft.to_yaml(), Err(DraftProblem::NoJobs));
+    }
+
+    #[test]
+    fn the_console_trigger_is_switched_on_by_default() {
+        let yaml = draft("ci").to_yaml().unwrap();
+
+        assert!(yaml.contains("on:\n  workflow_dispatch:\n\n"), "{yaml}");
+        assert!(!yaml.contains("  push:"));
+    }
+
+    #[test]
+    fn every_trigger_the_form_switched_on_is_written() {
+        let mut draft = draft("ci");
+        draft.triggers = Triggers {
+            manual: false,
+            push: true,
+            push_branches: Vec::new(),
+            pull_request: true,
+            pull_request_branches: Vec::new(),
+            schedule: Some("  0 3 * * *  ".to_owned()),
+        };
+
+        let yaml = draft.to_yaml().unwrap();
+
+        assert_eq!(
+            yaml.lines()
+                .skip_while(|line| *line != "on:")
+                .take(5)
+                .collect::<Vec<_>>(),
+            vec![
+                "on:",
+                "  push:",
+                "  pull_request:",
+                "  schedule:",
+                // The asterisks are quoted: unquoted, YAML would read the first
+                // one as an alias.
+                "    - cron: \"0 3 * * *\"",
+            ]
+        );
+        assert!(!yaml.contains("workflow_dispatch"));
+    }
+
+    #[test]
+    fn a_draft_that_nothing_would_start_is_refused() {
+        let mut draft = draft("ci");
+        draft.triggers = Triggers {
+            manual: false,
+            push: false,
+            push_branches: Vec::new(),
+            pull_request: false,
+            pull_request_branches: Vec::new(),
+            schedule: None,
+        };
+
+        assert_eq!(draft.to_yaml(), Err(DraftProblem::NoTrigger));
+    }
+
+    #[test]
+    fn a_schedule_without_a_cron_expression_is_refused() {
+        let mut draft = draft("ci");
+        draft.triggers.schedule = Some("   ".to_owned());
+
+        assert_eq!(draft.to_yaml(), Err(DraftProblem::Schedule));
+    }
+
+    #[test]
+    fn branch_filters_are_written_under_their_trigger() {
+        let mut draft = draft("ci");
+        draft.triggers.push = true;
+        draft.triggers.push_branches = branch_patterns(" main , release/* ,, ");
+        draft.triggers.pull_request = true;
+        draft.triggers.pull_request_branches = branch_patterns("main");
+
+        let yaml = draft.to_yaml().unwrap();
+
+        // The asterisk makes the pattern a quoted scalar.
+        assert!(
+            yaml.contains("  push:\n    branches: [main, \"release/*\"]\n"),
+            "{yaml}"
+        );
+        assert!(
+            yaml.contains("  pull_request:\n    branches: [main]\n"),
+            "{yaml}"
+        );
+    }
+
+    #[test]
+    fn a_trigger_without_patterns_carries_no_branch_filter() {
+        let mut draft = draft("ci");
+        draft.triggers.push = true;
+        draft.triggers.push_branches = branch_patterns("   ");
+
+        let yaml = draft.to_yaml().unwrap();
+
+        // The trigger line is followed by the blank line that ends `on:`, not
+        // by a nested key.
+        let lines = yaml.lines().collect::<Vec<_>>();
+        let push = lines
+            .iter()
+            .position(|line| *line == "  push:")
+            .expect("the push trigger");
+        assert_eq!(lines[push + 1], "");
+        assert!(!yaml.contains("branches:"), "{yaml}");
+    }
+
+    #[test]
+    fn branch_patterns_drop_blanks() {
+        assert_eq!(branch_patterns("main, release/*"), ["main", "release/*"]);
+        assert_eq!(branch_patterns(" main ,, "), ["main"]);
+        assert!(branch_patterns("   ").is_empty());
+    }
+
+    #[test]
+    fn a_runner_label_is_its_group_and_version() {
+        assert_eq!(runner_label("ubuntu", "24.04"), "ubuntu-24.04");
+        assert_eq!(runner_label("macos", "latest"), "macos-latest");
+        assert_eq!(runner_label(SELF_HOSTED_GROUP, "gpu-box"), "gpu-box");
+        assert!(RUNNER_GROUPS.contains(&"ubuntu"));
+        assert!(runner_versions("ubuntu").contains(&"24.04-arm"));
+        assert!(runner_versions("windows").contains(&"2025"));
+        assert!(runner_versions("macos").contains(&"15"));
     }
 
     #[test]

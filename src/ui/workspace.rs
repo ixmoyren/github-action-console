@@ -14,6 +14,7 @@ impl AppView {
         let selected_workflow = guard.selected_workflow_id();
         let workflow_file = guard.workflow_file().map(str::to_owned);
         let workflow_file_state = guard.workflow_file_state();
+        let runner_labels = guard.runner_labels().to_vec();
         let runs = guard.runs().to_vec();
         let runs_state = guard.runs_state();
         let runs_has_more = guard.runs_has_more();
@@ -29,6 +30,7 @@ impl AppView {
             this.selected_workflow_id = selected_workflow;
             this.workflow_file = workflow_file;
             this.workflow_file_state = workflow_file_state;
+            this.runner_labels = runner_labels;
             this.runs = runs;
             this.runs_state = runs_state;
             this.runs_has_more = runs_has_more;
@@ -366,19 +368,68 @@ impl AppView {
         // No file (nothing selected, another repository loading, a failure)
         // leaves the editor empty rather than showing the previous workflow.
         let contents = self.workflow_file.clone().unwrap_or_default();
-        if self.yaml_editor_text.as_deref() == Some(contents.as_str()) {
-            return;
-        }
-        self.yaml_editor_text = Some(contents.clone());
+        push_editor_text(
+            &self.yaml_editor,
+            &mut self.yaml_editor_text,
+            contents,
+            window,
+            cx,
+        );
 
-        let editor = self.yaml_editor.clone();
-        window.defer(cx, move |window, cx| {
-            editor.update(cx, |state, cx| {
-                if state.value().as_ref() != contents.as_str() {
-                    state.set_value(contents, window, cx);
-                }
+        // The preview editor holds the draft's YAML while the form shows it.
+        let preview = if self.previewing_draft {
+            self.draft_from_form(cx).to_yaml().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        push_editor_text(
+            &self.preview_editor,
+            &mut self.preview_editor_text,
+            preview,
+            window,
+            cx,
+        );
+
+        // The two runner dropdowns: the systems GitHub's runners answer to, and
+        // the versions of the chosen one. The self-hosted labels arrive from a
+        // background task, and the versions follow whatever system is selected.
+        let groups = runner_groups(&self.runner_labels);
+        if self.draft_os_options != groups {
+            self.draft_os_options = groups.clone();
+            let select = self.draft_runner_os.clone();
+            window.defer(cx, move |window, cx| {
+                select.update(cx, |state, cx| {
+                    state.set_items(SearchableVec::new(groups), window, cx);
+                });
             });
-        });
+        }
+
+        let group = self
+            .draft_runner_os
+            .read(cx)
+            .selected_value()
+            .map(|group| group.to_string())
+            .unwrap_or_else(|| RUNNER_GROUPS[0].to_owned());
+        let versions = if group == SELF_HOSTED_GROUP {
+            self.runner_labels
+                .iter()
+                .map(|label| SharedString::from(label.as_str()))
+                .collect::<Vec<_>>()
+        } else {
+            runner_versions_ui(&group)
+        };
+        if self.draft_version_options != versions {
+            self.draft_version_options = versions.clone();
+            let select = self.draft_runner_version.clone();
+            window.defer(cx, move |window, cx| {
+                select.update(cx, |state, cx| {
+                    state.set_items(SearchableVec::new(versions), window, cx);
+                    // A new system means its first version, not whatever index
+                    // the previous system's list happened to have.
+                    state.set_selected_index(Some(IndexPath::new(0)), window, cx);
+                });
+            });
+        }
     }
     /// Trigger the selected workflow on the default branch, then pull the runs
     /// so the new run shows up without a manual refresh.
@@ -447,6 +498,35 @@ impl AppView {
         self.reset_draft(window, cx);
         self.creating_workflow = true;
         cx.notify();
+
+        // The repository's own runner labels fill the dropdown once GitHub
+        // answers; the hosted list is already there.
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let workspace = self.workspace.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                let workspace = workspace.clone();
+                async move {
+                    workspace
+                        .lock()
+                        .await
+                        .load_runner_labels(&*gateway, &token)
+                        .await;
+                }
+            });
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
+            Self::refresh_workspace(&workspace, &this, cx).await;
+        })
+        .detach();
     }
 
     /// A blank form: no file name yet, the first runner, no container, one job.
@@ -457,7 +537,23 @@ impl AppView {
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.draft_container
             .update(cx, |state, cx| state.set_value("", window, cx));
-        self.draft_runner = RUNNERS[0].to_owned();
+        self.draft_cron
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.draft_push_branches
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.draft_pull_request_branches
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.draft_runner_os.update(cx, |state, cx| {
+            state.set_selected_index(Some(IndexPath::new(0)), window, cx);
+        });
+        self.draft_runner_version.update(cx, |state, cx| {
+            state.set_selected_index(Some(IndexPath::new(0)), window, cx);
+        });
+        self.draft_manual = true;
+        self.draft_push = false;
+        self.draft_pull_request = false;
+        self.draft_schedule = false;
+        self.previewing_draft = false;
 
         let job = self.new_draft_job(window, cx);
         self.draft_jobs = vec![job];
@@ -486,11 +582,42 @@ impl AppView {
 
     /// What the form says right now, before any of it reaches GitHub.
     fn draft_from_form(&self, cx: &App) -> WorkflowDraft {
+        let group = self
+            .draft_runner_os
+            .read(cx)
+            .selected_value()
+            .map(|group| group.to_string())
+            .unwrap_or_else(|| RUNNER_GROUPS[0].to_owned());
+        let version = self
+            .draft_runner_version
+            .read(cx)
+            .selected_value()
+            .map(|version| version.to_string())
+            .unwrap_or_else(|| {
+                runner_versions(&group)
+                    .first()
+                    .copied()
+                    .unwrap_or("latest")
+                    .to_owned()
+            });
+
         WorkflowDraft {
             file_name: self.draft_file_name.read(cx).value().to_string(),
             name: self.draft_name.read(cx).value().to_string(),
-            runs_on: self.draft_runner.clone(),
+            runs_on: runner_label(&group, &version),
             container: Some(self.draft_container.read(cx).value().to_string()),
+            triggers: Triggers {
+                manual: self.draft_manual,
+                push: self.draft_push,
+                push_branches: branch_patterns(self.draft_push_branches.read(cx).value().as_ref()),
+                pull_request: self.draft_pull_request,
+                pull_request_branches: branch_patterns(
+                    self.draft_pull_request_branches.read(cx).value().as_ref(),
+                ),
+                schedule: self
+                    .draft_schedule
+                    .then(|| self.draft_cron.read(cx).value().to_string()),
+            },
             jobs: self
                 .draft_jobs
                 .iter()
@@ -501,6 +628,55 @@ impl AppView {
                 })
                 .collect(),
         }
+    }
+
+    /// Write the draft to a local file, next to the downloads, without telling
+    /// GitHub anything.
+    pub(super) fn save_draft_locally(&mut self, cx: &mut Context<Self>) {
+        let draft = self.draft_from_form(cx);
+        let Ok(yaml) = draft.to_yaml() else {
+            return;
+        };
+        let file_name = draft
+            .path()
+            .map(|path| path.rsplit('/').next().unwrap_or("workflow.yml").to_owned())
+            .unwrap_or_else(|_| "workflow.yml".to_owned());
+
+        let downloads = self.downloads.clone();
+        let status = self.status.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let task = runtime.spawn({
+                let status = status.clone();
+                async move {
+                    let result = downloads.lock().await.save_file(&file_name, &yaml);
+                    let notice = match result {
+                        Ok(path) => Notice {
+                            kind: NoticeKind::Info,
+                            text: format!(
+                                "{}：{}",
+                                labels::WORKFLOW_NEW_SAVED_LOCALLY,
+                                path.display()
+                            ),
+                        },
+                        Err(error) => {
+                            warn!(%error, "could not save the workflow draft");
+                            Notice {
+                                kind: NoticeKind::Error,
+                                text: labels::WORKFLOW_NEW_SAVE_FAILED.to_owned(),
+                            }
+                        }
+                    };
+                    status.lock().await.push(notice);
+                }
+            });
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
+
+            Self::refresh_status(&status, &this, cx).await;
+        })
+        .detach();
     }
 
     /// Turn the form into a workflow file, push it, and show it in the editor.
@@ -529,9 +705,13 @@ impl AppView {
                         .create_workflow(&*gateway, &token, &draft)
                         .await;
                     let notice = match outcome {
-                        Ok(()) => Notice {
+                        Ok(PushOutcome::Created) => Notice {
                             kind: NoticeKind::Info,
                             text: labels::WORKFLOW_NEW_PUSHED.to_owned(),
+                        },
+                        Ok(PushOutcome::Replaced) => Notice {
+                            kind: NoticeKind::Info,
+                            text: labels::WORKFLOW_NEW_REPLACED.to_owned(),
                         },
                         Err(CreateProblem::Draft(problem)) => Notice {
                             kind: NoticeKind::Warning,
@@ -544,10 +724,6 @@ impl AppView {
                         Err(CreateProblem::NoDefaultBranch) => Notice {
                             kind: NoticeKind::Warning,
                             text: labels::WORKFLOW_NEW_NO_BRANCH.to_owned(),
-                        },
-                        Err(CreateProblem::AlreadyExists) => Notice {
-                            kind: NoticeKind::Warning,
-                            text: labels::WORKFLOW_NEW_EXISTS.to_owned(),
                         },
                         Err(CreateProblem::Gateway(problem)) => notice_for(problem),
                     };
@@ -566,6 +742,7 @@ impl AppView {
             if created
                 && let Err(error) = this.update(cx, |this, cx| {
                     this.creating_workflow = false;
+                    this.previewing_draft = false;
                     cx.notify();
                 })
             {
@@ -636,10 +813,10 @@ impl AppView {
             .flex_1()
             .min_h_0()
             .child(self.workflow_list_ui(cx))
-            .child(if self.creating_workflow {
-                self.workflow_draft_ui(cx)
-            } else {
-                self.workflow_file_ui(cx)
+            .child(match (self.creating_workflow, self.previewing_draft) {
+                (true, true) => self.workflow_preview_ui(cx),
+                (true, false) => self.workflow_draft_ui(cx),
+                (false, _) => self.workflow_file_ui(cx),
             })
             .into_any_element()
     }
@@ -825,7 +1002,8 @@ impl AppView {
         form = form
             .child(self.draft_field(labels::WORKFLOW_NEW_FILE, &self.draft_file_name))
             .child(self.draft_field(labels::WORKFLOW_NEW_NAME, &self.draft_name))
-            .child(self.draft_runner_row(cx))
+            .child(self.draft_triggers_ui(cx))
+            .child(self.draft_runner_row())
             .child(self.draft_field(labels::WORKFLOW_NEW_CONTAINER, &self.draft_container))
             .child(self.draft_jobs_ui(cx))
             .child(self.draft_submit_ui(problem, cx));
@@ -852,26 +1030,133 @@ impl AppView {
             .child(Input::new(input))
             .into_any_element()
     }
-    fn draft_runner_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut row = div().flex().flex_row().gap_2();
-        for runner in RUNNERS {
-            let mut button = Button::new(SharedString::from(format!("runner-{runner}")));
-            button = button.label(runner);
-            if self.draft_runner == runner {
-                button = button.primary();
-            }
-            row = row.child(button.on_click(cx.listener(move |this, _, _, cx| {
-                this.draft_runner = runner.to_owned();
-                cx.notify();
-            })));
-        }
-
+    fn draft_runner_row(&self) -> AnyElement {
         div()
             .flex()
             .flex_col()
             .gap_1()
             .child(Label::new(labels::WORKFLOW_NEW_RUNNER).text_sm())
-            .child(row)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .max_w(px(420.))
+                    .child(
+                        div()
+                            .w(px(160.))
+                            .child(Select::new(&self.draft_runner_os).id("draft-runner-os")),
+                    )
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Select::new(&self.draft_runner_version).id("draft-runner-version"),
+                        ),
+                    ),
+            )
+            .into_any_element()
+    }
+    /// The triggers the workflow answers to. At least one must stay on, which
+    /// the submit button enforces through the draft's own validation.
+    fn draft_triggers_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+        let checkboxes = div()
+            .flex()
+            .flex_row()
+            .gap_2()
+            .child(
+                Checkbox::new("trigger-manual")
+                    .label(labels::WORKFLOW_NEW_TRIGGER_MANUAL)
+                    .checked(self.draft_manual)
+                    .on_change(cx.listener(|this, checked, _, cx| {
+                        this.draft_manual = *checked;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Checkbox::new("trigger-push")
+                    .label(labels::WORKFLOW_NEW_TRIGGER_PUSH)
+                    .checked(self.draft_push)
+                    .on_change(cx.listener(|this, checked, _, cx| {
+                        this.draft_push = *checked;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Checkbox::new("trigger-pull-request")
+                    .label(labels::WORKFLOW_NEW_TRIGGER_PULL_REQUEST)
+                    .checked(self.draft_pull_request)
+                    .on_change(cx.listener(|this, checked, _, cx| {
+                        this.draft_pull_request = *checked;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Checkbox::new("trigger-schedule")
+                    .label(labels::WORKFLOW_NEW_TRIGGER_SCHEDULE)
+                    .checked(self.draft_schedule)
+                    .on_change(cx.listener(|this, checked, _, cx| {
+                        this.draft_schedule = *checked;
+                        cx.notify();
+                    })),
+            );
+
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(Label::new(labels::WORKFLOW_NEW_TRIGGERS).text_sm())
+            .child(checkboxes);
+
+        // A trigger that can be narrowed asks for its branches right under its
+        // checkbox, and a schedule asks for its cron expression.
+        if self.draft_push {
+            section = section.child(self.draft_branches_ui(
+                "draft-push-branches",
+                labels::WORKFLOW_NEW_PUSH_BRANCHES,
+                &self.draft_push_branches,
+            ));
+        }
+        if self.draft_pull_request {
+            section = section.child(self.draft_branches_ui(
+                "draft-pull-request-branches",
+                labels::WORKFLOW_NEW_PULL_REQUEST_BRANCHES,
+                &self.draft_pull_request_branches,
+            ));
+        }
+
+        if self.draft_schedule {
+            section = section.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .max_w(px(420.))
+                    .child(Label::new(labels::WORKFLOW_NEW_CRON).text_sm())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&self.draft_cron).id("draft-cron")),
+                    ),
+            );
+        }
+
+        section.into_any_element()
+    }
+    fn draft_branches_ui(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        input: &Entity<InputState>,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .max_w(px(420.))
+            .child(Label::new(label).text_sm())
+            .child(div().flex_1().min_w_0().child(Input::new(input).id(id)))
             .into_any_element()
     }
     fn draft_jobs_ui(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -946,13 +1231,37 @@ impl AppView {
             .into_any_element()
     }
     fn draft_submit_ui(&self, problem: Option<DraftProblem>, cx: &mut Context<Self>) -> AnyElement {
-        let mut submit = div().flex().flex_row().items_center().gap_3().child(
-            Button::new("draft-create")
-                .label(labels::WORKFLOW_NEW_CREATE)
-                .primary()
-                .disabled(problem.is_some())
-                .on_click(cx.listener(|this, _, _, cx| this.create_workflow(cx))),
-        );
+        // Saving to disk and previewing only need a draft that is a workflow;
+        // pushing is the step that writes to GitHub, replacing a file of the
+        // same name if the repository already has one.
+        let ready = problem.is_none();
+        let mut submit = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .child(
+                Button::new("draft-save")
+                    .label(labels::WORKFLOW_NEW_SAVE)
+                    .disabled(!ready)
+                    .on_click(cx.listener(|this, _, _, cx| this.save_draft_locally(cx))),
+            )
+            .child(
+                Button::new("draft-preview")
+                    .label(labels::WORKFLOW_NEW_PREVIEW)
+                    .disabled(!ready)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.previewing_draft = true;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("draft-push")
+                    .label(labels::WORKFLOW_NEW_PUSH)
+                    .primary()
+                    .disabled(!ready)
+                    .on_click(cx.listener(|this, _, _, cx| this.create_workflow(cx))),
+            );
 
         if let Some(problem) = problem {
             submit = submit.child(
@@ -963,6 +1272,43 @@ impl AppView {
         }
 
         submit.into_any_element()
+    }
+    /// The generated file, in a read-only editor, before anything is written
+    /// anywhere.
+    fn workflow_preview_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("workflow-preview-pane")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("draft-preview-back")
+                            .label(labels::WORKFLOW_NEW_BACK)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.previewing_draft = false;
+                                cx.notify();
+                            })),
+                    )
+                    .child(Label::new(labels::WORKFLOW_NEW_PREVIEW).text_sm()),
+            )
+            .child(
+                div().flex_1().min_h_0().min_w_0().child(
+                    Editor::new(&self.preview_editor)
+                        .h(relative(1.))
+                        .readonly(true),
+                ),
+            )
+            .test_support()
+            .into_any_element()
     }
     pub(super) fn runs_panel_ui(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.open_run.is_some() {
@@ -1122,7 +1468,34 @@ fn draft_problem_text(problem: DraftProblem) -> &'static str {
         DraftProblem::FileName => labels::WORKFLOW_NEW_BAD_FILE,
         DraftProblem::JobId => labels::WORKFLOW_NEW_BAD_JOB,
         DraftProblem::NoJobs => labels::WORKFLOW_NEW_NO_JOBS,
+        DraftProblem::NoTrigger => labels::WORKFLOW_NEW_NO_TRIGGER,
+        DraftProblem::Schedule => labels::WORKFLOW_NEW_BAD_SCHEDULE,
     }
+}
+
+/// Hand text to an editor state. Editors only take text with a window in hand,
+/// and what they show arrives from a background task, so the handover happens
+/// between frames and only when the text actually changed.
+fn push_editor_text(
+    editor: &Entity<EditorState>,
+    applied: &mut Option<String>,
+    contents: String,
+    window: &mut Window,
+    cx: &mut Context<AppView>,
+) {
+    if applied.as_deref() == Some(contents.as_str()) {
+        return;
+    }
+    *applied = Some(contents.clone());
+
+    let editor = editor.clone();
+    window.defer(cx, move |window, cx| {
+        editor.update(cx, |state, cx| {
+            if state.value().as_ref() != contents.as_str() {
+                state.set_value(contents, window, cx);
+            }
+        });
+    });
 }
 
 #[cfg(test)]
@@ -1274,7 +1647,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn the_new_workflow_button_opens_and_closes_the_form(cx: &mut TestAppContext) {
-        let (handle, _view, _editor) = workspace_page(cx);
+        let (handle, view, _editor) = workspace_page(cx);
         let handle = handle.into();
 
         cx.update_window(handle, |_, window, cx| {
@@ -1288,6 +1661,16 @@ mod tests {
             window.draw(cx).clear(cx);
             assert!(window.find("workflow-draft-pane").visible());
 
+            // Fill in enough of the draft for the buttons to come alive.
+            let (file_name, job_id) = view.read_with(cx, |view, _| {
+                (view.draft_file_name.clone(), view.draft_jobs[0].id.clone())
+            });
+            file_name.update(cx, |state, cx| state.set_value("nightly", window, cx));
+            job_id.update(cx, |state, cx| state.set_value("build", window, cx));
+            window.draw(cx).clear(cx);
+            let draft = view.read_with(cx, |view, cx| view.draft_from_form(cx));
+            assert!(draft.to_yaml().is_ok(), "{:?}", draft.to_yaml().err());
+
             // Jobs can be added to the draft while it is open.
             window.click("draft-job-add", cx);
             window.draw(cx).clear(cx);
@@ -1295,6 +1678,54 @@ mod tests {
                 window.try_find("draft-job-remove-1").is_some(),
                 "the second job row never appeared"
             );
+            // A blank job leaves the draft incomplete, so name it too.
+            let second_job = view.read_with(cx, |view, _| view.draft_jobs[1].id.clone());
+            second_job.update(cx, |state, cx| state.set_value("package", window, cx));
+            window.draw(cx).clear(cx);
+
+            // The two runner dropdowns start on the hosted default.
+            assert_eq!(window.find("draft-runner-os").value(), Some("ubuntu"));
+            assert_eq!(window.find("draft-runner-version").value(), Some("latest"));
+
+            // The trigger row starts on the console's own trigger, and the
+            // narrower triggers only ask for their input once they are on.
+            assert!(window.try_find("trigger-manual").is_some());
+            assert!(window.try_find("draft-cron").is_none());
+            assert!(window.try_find("draft-push-branches").is_none());
+            window.click("trigger-push", cx);
+            window.draw(cx).clear(cx);
+            assert!(view.read_with(cx, |view, _| view.draft_push));
+            assert!(window.try_find("draft-push-branches").is_some());
+            window.click("trigger-schedule", cx);
+            window.draw(cx).clear(cx);
+            assert!(
+                window.try_find("draft-cron").is_some(),
+                "the cron field did not appear"
+            );
+            window.click("trigger-schedule", cx);
+            window.draw(cx).clear(cx);
+
+            // The version list follows the system that is chosen.
+            let os = view.read_with(cx, |view, _| view.draft_runner_os.clone());
+            os.update(cx, |state, cx| {
+                state.set_selected_index(Some(gpui_kit::component::IndexPath::new(1)), window, cx);
+            });
+            window.draw(cx).clear(cx);
+            assert_eq!(
+                view.read_with(cx, |view, _| view.draft_version_options.clone()),
+                ["latest", "2025", "2022"]
+                    .into_iter()
+                    .map(gpui_kit::SharedString::from)
+                    .collect::<Vec<_>>()
+            );
+
+            // Previewing swaps the form for the generated file.
+            window.click("draft-preview", cx);
+            window.draw(cx).clear(cx);
+            assert!(window.find("workflow-preview-pane").visible());
+            window.click("draft-preview-back", cx);
+            window.draw(cx).clear(cx);
+            assert!(window.find("workflow-draft-pane").visible());
 
             window.click("new-workflow-off", cx);
             window.draw(cx).clear(cx);

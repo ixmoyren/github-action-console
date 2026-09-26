@@ -64,10 +64,17 @@ pub enum CreateProblem {
     /// The repository's default branch is unknown, so there is no branch to
     /// commit to.
     NoDefaultBranch,
-    /// A workflow file with that name is already in the repository.
-    AlreadyExists,
     /// GitHub refused the write.
     Gateway(AppProblem),
+}
+
+/// What a push did to the repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushOutcome {
+    /// The file was not there before.
+    Created,
+    /// A file of the same name was replaced.
+    Replaced,
 }
 
 /// One repository's workspace: its workflows, its runs, and the filters and
@@ -82,6 +89,8 @@ pub struct Workspace {
     workflow_file: Option<String>,
     workflow_file_sha: Option<String>,
     workflow_file_state: LoadState,
+    runner_labels: Vec<String>,
+    runner_labels_state: LoadState,
     runs: Vec<WorkflowRun>,
     runs_state: LoadState,
     runs_filter: RunFilter,
@@ -107,6 +116,8 @@ impl Workspace {
             workflow_file: None,
             workflow_file_sha: None,
             workflow_file_state: LoadState::Idle,
+            runner_labels: Vec::new(),
+            runner_labels_state: LoadState::Idle,
             runs: Vec::new(),
             runs_state: LoadState::Idle,
             runs_filter: RunFilter::default(),
@@ -142,6 +153,8 @@ impl Workspace {
             self.workflow_file = None;
             self.workflow_file_sha = None;
             self.workflow_file_state = LoadState::Idle;
+            self.runner_labels.clear();
+            self.runner_labels_state = LoadState::Idle;
             self.runs.clear();
             self.runs_state = LoadState::Idle;
             self.runs_filter = RunFilter::default();
@@ -182,6 +195,48 @@ impl Workspace {
 
     pub fn workflow_file_state(&self) -> LoadState {
         self.workflow_file_state
+    }
+
+    /// The repository's own runner labels, on top of the hosted ones the
+    /// console carries.
+    pub fn runner_labels(&self) -> &[String] {
+        &self.runner_labels
+    }
+
+    pub fn runner_labels_state(&self) -> LoadState {
+        self.runner_labels_state
+    }
+
+    /// Read the repository's self-hosted runner labels. A repository without
+    /// any — or without the rights to list them — keeps the hosted list only.
+    pub async fn load_runner_labels(&mut self, gateway: &dyn GitHubGateway, token: &SecretToken) {
+        let Some((owner, repository)) = self.parts() else {
+            return;
+        };
+
+        debug!(repository = %repository, "loading runner labels");
+        self.runner_labels_state = LoadState::Loading;
+        match gateway.runner_labels(token, &owner, &repository).await {
+            Ok(labels) => {
+                let mut labels: Vec<String> = labels
+                    .into_iter()
+                    .map(|label| label.trim().to_owned())
+                    .filter(|label| !label.is_empty())
+                    .collect();
+                labels.sort();
+                labels.dedup();
+                info!(count = labels.len(), "runner labels loaded");
+                self.runner_labels = labels;
+                self.runner_labels_state = LoadState::Loaded;
+            }
+            Err(error) => {
+                // Runner labels are a convenience: a repository the user cannot
+                // administer simply keeps the hosted list.
+                warn!(%error, repository = %repository, "could not load runner labels");
+                self.runner_labels.clear();
+                self.runner_labels_state = LoadState::failed(&error);
+            }
+        }
     }
 
     /// Show another workflow. Its file is fetched by [`Self::load_workflow_file`].
@@ -351,15 +406,14 @@ impl Workspace {
         Ok(())
     }
 
-    /// Write a new workflow file, then show it. The file's name is checked
-    /// against the repository first, so a draft cannot overwrite a workflow
-    /// that is already there.
+    /// Write the workflow file, then show it. A file already at that path is
+    /// replaced, which is what the push button promises.
     pub async fn create_workflow(
         &mut self,
         gateway: &dyn GitHubGateway,
         token: &SecretToken,
         draft: &WorkflowDraft,
-    ) -> Result<(), CreateProblem> {
+    ) -> Result<PushOutcome, CreateProblem> {
         let yaml = draft.to_yaml().map_err(CreateProblem::Draft)?;
         let path = draft.path().map_err(CreateProblem::Draft)?;
         let Some((owner, repository)) = self.parts() else {
@@ -369,24 +423,29 @@ impl Workspace {
             return Err(CreateProblem::NoDefaultBranch);
         };
 
-        match gateway
+        // The read decides both questions at once: whether the file is already
+        // there, and which revision a replacement has to start from.
+        let (outcome, sha) = match gateway
             .file_contents(token, &owner, &repository, &path)
             .await
         {
-            Ok(_) => return Err(CreateProblem::AlreadyExists),
-            Err(GatewayError::NotFound) => {}
+            Ok(existing) => (PushOutcome::Replaced, Some(existing.sha)),
+            Err(GatewayError::NotFound) => (PushOutcome::Created, None),
             Err(error) => {
                 return Err(CreateProblem::Gateway(AppProblem::from_gateway(&error)));
             }
-        }
+        };
 
-        info!(%path, %reference, "creating a workflow file");
+        info!(%path, %reference, ?outcome, "pushing a workflow file");
         let write = FileWrite {
-            message: format!("chore: 添加工作流 {path}"),
+            message: match outcome {
+                PushOutcome::Created => format!("chore: 添加工作流 {path}"),
+                PushOutcome::Replaced => format!("chore: 更新工作流 {path}"),
+            },
             path: path.clone(),
             contents: yaml,
             reference,
-            sha: None,
+            sha,
         };
         gateway
             .write_file(token, &owner, &repository, write)
@@ -395,7 +454,7 @@ impl Workspace {
 
         self.load_workflows(gateway, token).await;
         self.show_workflow_at(&path, gateway, token).await;
-        Ok(())
+        Ok(outcome)
     }
 
     /// Select the workflow a path belongs to, if the repository has one. A file
