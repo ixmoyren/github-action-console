@@ -433,15 +433,39 @@ impl AppView {
     /// keeps its heading whichever way the drawer is.
     fn workspace_header_ui(&self, cx: &mut Context<Self>) -> AnyElement {
         let link_color = cx.theme().link;
-        let (runs_id, runs_label) = if self.drawer_open(DrawerKind::Runs) {
-            ("close-runs-drawer", labels::WORKSPACE_RUN_HISTORY_CLOSE)
+        // 没开的时候是一句"去那儿看看"的链接；开着的时候，关掉它的那颗按钮要显眼
+        // ——抽屉盖住了编辑器，得让人一眼看见回去的路。
+        let runs_control = if self.drawer_open(DrawerKind::Runs) {
+            Button::new("close-runs-drawer")
+                .label(labels::WORKSPACE_RUN_HISTORY_CLOSE)
+                .primary()
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_drawer(DrawerKind::Runs, cx)))
+                .into_any_element()
         } else {
-            ("open-runs-drawer", labels::WORKSPACE_RUN_HISTORY)
+            div()
+                .id("open-runs-drawer")
+                .test_support()
+                .text_color(link_color)
+                .cursor_pointer()
+                .child(labels::WORKSPACE_RUN_HISTORY)
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_drawer(DrawerKind::Runs, cx)))
+                .into_any_element()
         };
-        let (board_id, board_label) = if self.drawer_open(DrawerKind::Board) {
-            ("close-board-drawer", labels::WORKSPACE_BOARD_CLOSE)
+        let board_control = if self.drawer_open(DrawerKind::Board) {
+            Button::new("close-board-drawer")
+                .label(labels::WORKSPACE_BOARD_CLOSE)
+                .primary()
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_drawer(DrawerKind::Board, cx)))
+                .into_any_element()
         } else {
-            ("open-board-drawer", labels::WORKSPACE_BOARD)
+            div()
+                .id("open-board-drawer")
+                .test_support()
+                .text_color(link_color)
+                .cursor_pointer()
+                .child(labels::WORKSPACE_BOARD)
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_drawer(DrawerKind::Board, cx)))
+                .into_any_element()
         };
 
         let heading = div()
@@ -494,28 +518,8 @@ impl AppView {
                     .flex_row()
                     .items_center()
                     .gap_4()
-                    .child(
-                        div()
-                            .id(runs_id)
-                            .test_support()
-                            .text_color(link_color)
-                            .cursor_pointer()
-                            .child(runs_label)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.toggle_drawer(DrawerKind::Runs, cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id(board_id)
-                            .test_support()
-                            .text_color(link_color)
-                            .cursor_pointer()
-                            .child(board_label)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.toggle_drawer(DrawerKind::Board, cx);
-                            })),
-                    ),
+                    .child(runs_control)
+                    .child(board_control),
             )
             .into_any_element()
     }
@@ -749,6 +753,8 @@ impl AppView {
     }
     /// 跑列表里的某一条工作流：在默认分支上 dispatch，然后把运行记录拉一遍，
     /// 好让这次跑出来的记录自己冒出来。
+    ///
+    /// 跑起来了就把运行记录抽屉打开——那次运行就在里面，人接着就能看着它。
     pub(super) fn run_workflow(&mut self, workflow_id: u64, cx: &mut Context<Self>) {
         // 上一次运行还没回来就不再 dispatch：双击不该跑两遍。
         if !self.begin_action(ActionKey::Run) {
@@ -794,14 +800,21 @@ impl AppView {
                         if outcome.is_ok() {
                             workspace.lock().await.reload_runs(&*gateway, &token).await;
                         }
+                        outcome.is_ok()
                     }
                 });
-                if let Err(error) = task.await {
+                let ran = task.await.unwrap_or_else(|error| {
                     warn!(%error, "a background task did not finish");
-                }
+                    false
+                });
 
                 Self::refresh_status(&status, &this, cx).await;
                 Self::refresh_workspace(&workspace, &board, &this, cx).await;
+
+                // 跑起来了就把运行记录打开：这次跑的记录就在那儿，人接着就能看着它。
+                if let Err(error) = this.update(cx, |this, cx| this.after_run(ran, cx)) {
+                    warn!(?error, "the view was gone before the update landed");
+                }
             }
 
             Self::release_action(&this, ActionKey::Run, cx);
@@ -1487,6 +1500,27 @@ impl AppView {
                     })),
             )
             .into_any_element()
+    }
+
+    /// 一次运行触发之后界面上该做什么：跑起来了就打开运行记录，让这次运行自己露面。
+    ///
+    /// 顺手把可能开着的那条旧详情让开——人要看的是列表里刚冒出来的这一条，不是上一次
+    /// 点开的那条。
+    pub(super) fn after_run(&mut self, ran: bool, cx: &mut Context<Self>) {
+        if !self.show_run_history(ran) {
+            return;
+        }
+        self.open_drawer(DrawerKind::Runs, cx);
+    }
+
+    /// 要不要把运行记录摆到眼前（跑起来了才要）；要的话顺手让开旧详情。
+    fn show_run_history(&mut self, ran: bool) -> bool {
+        if !ran {
+            return false;
+        }
+        self.open_run = None;
+        self.run_html_url = None;
+        true
     }
 
     /// 新建发布流 / 取消新建发布流：同一颗按钮上的两个动作。
@@ -3256,6 +3290,54 @@ mod tests {
 
             // 不能手动跑的那一条没有按钮。
             assert!(window.try_find("workflow-run-2").is_none());
+        })
+        .unwrap();
+    }
+
+    /// 跑起来一次就把运行记录摆到眼前；没跑起来就什么都不动。
+    ///
+    /// 真正把抽屉推出来那一步会走 `set_workspace_tab`（tokio 线程上的活），测试调度器
+    /// 不认；这里钉住的是"跑起来了才摆"这个判定，抽屉本身的开合在别的用例里覆盖。
+    #[gpui_kit::test]
+    fn a_triggered_run_reveals_the_run_history(cx: &mut TestAppContext) {
+        let (_handle, view, _editor) = workspace_page(cx);
+
+        view.update(cx, |view, _| {
+            view.open_run = Some(1);
+
+            // 没跑起来（比如被拒）：没什么可看的，旧详情留着。
+            assert!(!view.show_run_history(false));
+            assert_eq!(view.open_run, Some(1));
+
+            // 跑起来了：旧详情让开，运行记录该露面了。
+            assert!(view.show_run_history(true));
+            assert_eq!(view.open_run, None);
+        });
+    }
+
+    /// 抽屉开着的时候，"关闭运行记录"是一颗有背景的按钮；关着的时候只是个入口。
+    #[gpui_kit::test]
+    fn the_open_drawer_offers_a_prominent_way_back(cx: &mut TestAppContext) {
+        let (handle, view, _editor) = workspace_page(cx);
+        let handle: gpui_kit::AnyWindowHandle = handle.into();
+
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            // 关着：一句链接，不是按钮。
+            assert_eq!(window.find("open-runs-drawer").role(), None);
+        })
+        .unwrap();
+
+        view.update(cx, |view, cx| view.begin_drawer_open(cx));
+
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            let close = window.find("close-runs-drawer");
+            assert_eq!(close.role(), Some(gpui_kit::Role::Button));
+            assert_eq!(
+                close.label(),
+                Some(crate::labels::WORKSPACE_RUN_HISTORY_CLOSE)
+            );
         })
         .unwrap();
     }
