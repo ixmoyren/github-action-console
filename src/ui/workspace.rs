@@ -810,7 +810,7 @@ impl AppView {
     }
     /// Open or close the new-workflow form. Opening always starts blank.
     pub(super) fn toggle_new_workflow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 双击不该开一下又关掉。
+        // 双击不该开一下又关掉：开与关共用一个 key，靠得太近的第二下不算数。
         if !self.accept_click(ActionKey::NewWorkflowForm) {
             return;
         }
@@ -1494,6 +1494,7 @@ impl AppView {
     /// 开：把模板装进编辑器，抽屉让开，接着就能改、能保存。关：离开这一面，回到
     /// 选中的那条工作流（这次没写完的模板不留下，下次打开又是干净的一份）。
     pub(super) fn toggle_release_flow(&mut self, cx: &mut Context<Self>) {
+        // 开与关共用一个 key：双击只算一次。
         if !self.accept_click(ActionKey::ReleaseFlow) {
             return;
         }
@@ -3134,7 +3135,7 @@ mod tests {
 
         // 取消之后再打开：又是一份干净的模板（没留下上次的草稿）。
         cx.update_window(handle, |_, window, cx| {
-            // 上一次点击刚过去，先把这个动作的防抖放行。
+            // 又是这颗按钮，而刚点过（测试里时间几乎没走）：先放行这一次。
             view.update(cx, |view, _| view.last_clicked.clear());
             window.click("new-release-flow", cx);
             window.draw(cx).clear(cx);

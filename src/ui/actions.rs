@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use super::*;
 
 /// 两次点击之间的最小间隔：比这更近的第二下当成同一次点击的余波。
-const DEBOUNCE: Duration = Duration::from_millis(350);
+const DEBOUNCE: Duration = Duration::from_millis(3500);
 
 /// 一个受保护的动作。按键而不是按按钮分：同一种动作同时只允许一次。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -47,7 +47,8 @@ pub(crate) enum ActionKey {
     CancelRun,
     /// 删除一次运行。
     DeleteRun,
-    /// 新建工作流的表单开关。
+    /// 新建工作流的表单开关。开与关共用一个 key：双击只算一次，否则第二下会落到
+    /// 变身后的那颗按钮上，等于开一下又关掉。
     NewWorkflowForm,
     /// 新建发布流 / 取消新建发布流的开关。
     ReleaseFlow,
@@ -133,6 +134,6 @@ mod tests {
             Some(first),
             first + DEBOUNCE + Duration::from_millis(1)
         ));
-        assert!(is_new_click(Some(first), first + Duration::from_secs(2)));
+        assert!(is_new_click(Some(first), first + Duration::from_secs(10)));
     }
 }
