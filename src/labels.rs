@@ -54,7 +54,8 @@ pub const WORKSPACE_BACK_ARROW: &str = "←";
 pub const WORKSPACE_BACK_TO_WORKFLOWS: &str = "返回工作流";
 pub const WORKSPACE_WORKFLOWS: &str = "工作流";
 pub const WORKSPACE_RUNS: &str = "运行";
-pub const WORKSPACE_RUN_HISTORY: &str = "运行记录 →";
+pub const WORKSPACE_RUN_HISTORY: &str = "← 运行记录";
+pub const WORKSPACE_RUN_HISTORY_CLOSE: &str = "关闭运行记录 →";
 pub const WORKSPACE_COMING_SOON: &str = "即将推出。";
 
 pub const PROBLEM_RATE_LIMITED: &str = "已触发 GitHub 限流，请稍后重试。";
@@ -147,7 +148,7 @@ pub fn conclusion_label(conclusion: Option<&str>) -> String {
         "neutral" => "中性",
         _ => conclusion,
     }
-        .to_owned()
+    .to_owned()
 }
 
 pub const RUN_DETAIL_BACK: &str = "返回运行列表";

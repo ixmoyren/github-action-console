@@ -1,6 +1,21 @@
 use super::*;
 use super::{AppView, RUN_POLL_SECONDS};
 
+/// How long the runs drawer takes to slide in, or back out. The drawer travels
+/// its own width, so it gets a little longer than a short nudge would.
+const DRAWER_SLIDE: Duration = Duration::from_millis(200);
+
+/// Where the runs drawer stands. The drawer slides in, and slides back out the
+/// way it came before it leaves the tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum DrawerPhase {
+    #[default]
+    Closed,
+    Open,
+    /// The slide out is playing; the drawer leaves when it ends.
+    Closing,
+}
+
 impl AppView {
     pub(super) async fn refresh_workspace(
         workspace: &Arc<Mutex<Workspace>>,
@@ -85,6 +100,9 @@ impl AppView {
     }
     pub(super) fn set_workspace_tab(&mut self, tab: WorkspaceTab, cx: &mut Context<Self>) {
         self.workspace_tab = tab;
+        // The drawer follows this immediately; the work behind it can land
+        // whenever it lands.
+        cx.notify();
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
         let workspace = self.workspace.clone();
@@ -202,12 +220,9 @@ impl AppView {
         })
         .detach();
     }
+    /// The repository page: the workflow list, the editor, and — when asked for
+    /// — the runs drawer over the editor. The drawer never replaces the page.
     pub(super) fn workspace_shell(&self, cx: &mut Context<Self>) -> AnyElement {
-        let content = match self.workspace_tab {
-            WorkspaceTab::Workflows => self.workflows_panel_ui(cx),
-            WorkspaceTab::Runs => self.runs_panel_ui(cx),
-        };
-
         div()
             .flex()
             .flex_col()
@@ -215,81 +230,127 @@ impl AppView {
             .p_3()
             .size_full()
             .child(self.workspace_header_ui(cx))
-            .child(content)
+            .child(self.workflows_panel_ui(cx))
             .into_any_element()
     }
-    /// The page title, and the way across to the other view. Each view is a
-    /// page with a heading rather than one more row of buttons.
+    /// The page title and its actions. The runs list is a drawer, so the page
+    /// keeps its heading whichever way the drawer is.
     fn workspace_header_ui(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (title, back) = match self.workspace_tab {
-            WorkspaceTab::Workflows => (labels::WORKSPACE_WORKFLOWS, None),
-            WorkspaceTab::Runs => (
-                labels::WORKSPACE_RUNS,
-                Some(
-                    Button::new("back-to-workflows")
-                        .label(labels::WORKSPACE_BACK_ARROW)
-                        .tooltip(labels::WORKSPACE_BACK_TO_WORKFLOWS)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_workspace_tab(WorkspaceTab::Workflows, cx);
-                        }))
-                        .into_any_element(),
-                ),
-            ),
+        let (id, label) = if self.runs_drawer_open() {
+            ("close-runs-drawer", labels::WORKSPACE_RUN_HISTORY_CLOSE)
+        } else {
+            ("open-runs-drawer", labels::WORKSPACE_RUN_HISTORY)
         };
+        let link_color = cx.theme().link;
 
         let heading = div()
             .flex()
             .flex_row()
             .items_center()
             .gap_2()
-            .children(back)
-            .child(Label::new(title).text_lg());
+            .child(Label::new(labels::WORKSPACE_WORKFLOWS).text_lg())
+            .child(
+                Button::new(if self.creating_workflow {
+                    "new-workflow-off"
+                } else {
+                    "new-workflow-on"
+                })
+                .label(if self.creating_workflow {
+                    labels::WORKFLOW_NEW_CANCEL
+                } else {
+                    labels::WORKFLOW_NEW
+                })
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_new_workflow(window, cx))),
+            );
 
-        // The workflow page's one action: start a new workflow file.
-        let new_workflow = (self.workspace_tab == WorkspaceTab::Workflows).then(|| {
-            let (id, label) = if self.creating_workflow {
-                ("new-workflow-off", labels::WORKFLOW_NEW_CANCEL)
-            } else {
-                ("new-workflow-on", labels::WORKFLOW_NEW)
-            };
-            Button::new(id)
-                .label(label)
-                .on_click(cx.listener(|this, _, window, cx| this.toggle_new_workflow(window, cx)))
-                .into_any_element()
-        });
-        let heading = heading.children(new_workflow);
-
-        let mut header = div()
+        div()
             .flex()
             .flex_row()
             .items_center()
             .justify_between()
-            .child(heading);
-
-        match self.workspace_tab {
-            WorkspaceTab::Workflows => {
-                let link_color = cx.theme().link;
-                header = header.child(
-                    div()
-                        .id("open-runs")
-                        .text_color(link_color)
-                        .cursor_pointer()
-                        .child(labels::WORKSPACE_RUN_HISTORY)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_workspace_tab(WorkspaceTab::Runs, cx);
-                        })),
-                );
-            }
-            WorkspaceTab::Runs => {}
+            .child(heading)
+            // The runs list opens from the far end of the row, away from the
+            // page's own actions.
+            .child(
+                div()
+                    .id(id)
+                    .test_support()
+                    .text_color(link_color)
+                    .cursor_pointer()
+                    .child(label)
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_runs_drawer(cx))),
+            )
+            .into_any_element()
+    }
+    /// Open or close the runs drawer. The app layer's tab still says which view
+    /// is in front, because polling follows it.
+    pub(super) fn toggle_runs_drawer(&mut self, cx: &mut Context<Self>) {
+        if self.runs_drawer_open() {
+            self.close_runs_drawer(cx);
+        } else {
+            self.open_runs_drawer(cx);
         }
+    }
+    /// Slide the drawer in from the right, and tell the app layer the runs view
+    /// is in front — which is what keeps running runs polling.
+    pub(super) fn open_runs_drawer(&mut self, cx: &mut Context<Self>) {
+        self.begin_drawer_open(cx);
+        self.set_workspace_tab(WorkspaceTab::Runs, cx);
+    }
+    fn begin_drawer_open(&mut self, cx: &mut Context<Self>) {
+        self.set_drawer_phase(DrawerPhase::Open, cx);
+    }
+    /// Slide the drawer back out to the right, the way it came in, and take it
+    /// out of the tree when the slide is done. Polling stops straight away.
+    pub(super) fn close_runs_drawer(&mut self, cx: &mut Context<Self>) {
+        if self.drawer == DrawerPhase::Closed {
+            return;
+        }
+        self.set_workspace_tab(WorkspaceTab::Workflows, cx);
+        self.begin_drawer_close(cx);
+    }
+    fn begin_drawer_close(&mut self, cx: &mut Context<Self>) {
+        if self.drawer == DrawerPhase::Closed {
+            return;
+        }
+        self.set_drawer_phase(DrawerPhase::Closing, cx);
 
-        header.into_any_element()
+        let generation = self.drawer_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(DRAWER_SLIDE).await;
+            if let Err(error) = this.update(cx, |this, cx| {
+                // A slide that another one overtook leaves the drawer alone.
+                if this.drawer_generation == generation && this.drawer == DrawerPhase::Closing {
+                    this.drawer = DrawerPhase::Closed;
+                    cx.notify();
+                }
+            }) {
+                warn!(?error, "the view was gone before the slide finished");
+            }
+        })
+        .detach();
+    }
+    fn set_drawer_phase(&mut self, phase: DrawerPhase, cx: &mut Context<Self>) {
+        self.drawer = phase;
+        self.drawer_generation += 1;
+        cx.notify();
+    }
+    fn runs_drawer_visible(&self) -> bool {
+        self.drawer != DrawerPhase::Closed
+    }
+    fn runs_drawer_open(&self) -> bool {
+        self.drawer == DrawerPhase::Open
     }
     /// Show a workflow's file. Selecting is cheap; the file itself is fetched
     /// in the background afterwards.
     pub(super) fn select_workflow(&mut self, workflow_id: u64, cx: &mut Context<Self>) {
         // Browsing away from the form means leaving it.
         self.creating_workflow = false;
+        // Asking for a workflow's file means seeing the editor: the drawer gets
+        // out of the way.
+        if self.runs_drawer_open() {
+            self.close_runs_drawer(cx);
+        }
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
         let workspace = self.workspace.clone();
@@ -467,6 +528,10 @@ impl AppView {
 
         self.reset_draft(window, cx);
         self.creating_workflow = true;
+        // The form lives where the drawer would be: give it the pane.
+        if self.runs_drawer_open() {
+            self.close_runs_drawer(cx);
+        }
         cx.notify();
 
         // The repository's own runner labels fill the dropdown once GitHub
@@ -783,11 +848,87 @@ impl AppView {
             .flex_1()
             .min_h_0()
             .child(self.workflow_list_ui(cx))
-            .child(match (self.creating_workflow, self.previewing_draft) {
-                (true, true) => self.workflow_preview_ui(cx),
-                (true, false) => self.workflow_draft_ui(cx),
-                (false, _) => self.workflow_file_ui(cx),
-            })
+            // The drawer sits over this pane: the workflow page stays where it
+            // was, only the editor is covered while the runs are open.
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .h_full()
+                    // The drawer slides over this pane and out of it, so the
+                    // pane is what clips it.
+                    .overflow_hidden()
+                    .child(match (self.creating_workflow, self.previewing_draft) {
+                        (true, true) => self.workflow_preview_ui(cx),
+                        (true, false) => self.workflow_draft_ui(cx),
+                        (false, _) => self.workflow_file_ui(cx),
+                    })
+                    .when(self.runs_drawer_visible(), |this| {
+                        this.child(self.runs_drawer_ui(cx))
+                    }),
+            )
+            .into_any_element()
+    }
+    /// The runs list, sliding in from the right edge of the pane.
+    fn runs_drawer_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+        let closing = self.drawer == DrawerPhase::Closing;
+
+        div()
+            .id("runs-drawer")
+            .test_support()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w_full()
+            .child(
+                div()
+                    // Sliding out is its own timeline, so it can play back the
+                    // slide in: the surface starts where it ended and leaves to
+                    // the right.
+                    .id(if closing {
+                        "runs-drawer-out"
+                    } else {
+                        "runs-drawer-in"
+                    })
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .w_full()
+                    .occlude()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .p_3()
+                    .bg(cx.theme().background)
+                    .border_l_1()
+                    .border_color(cx.theme().border)
+                    .shadow_xl()
+                    // The header's link opens and closes this: the drawer
+                    // carries no title bar of its own.
+                    .child(self.runs_panel_ui(cx))
+                    .with_animation(
+                        if closing {
+                            "runs-drawer-out"
+                        } else {
+                            "runs-drawer-in"
+                        },
+                        Animation::new(DRAWER_SLIDE),
+                        move |this, delta| {
+                            // The drawer is as wide as the pane and travels its
+                            // own width: in, it comes from beyond the right edge
+                            // until the editor is covered; out, it is pushed back
+                            // the same way, which uncovers the editor from the
+                            // left as it goes.
+                            if closing {
+                                this.left(relative(delta))
+                            } else {
+                                this.left(relative(1. - delta))
+                            }
+                        },
+                    ),
+            )
             .into_any_element()
     }
     /// The workflow the file viewer is showing.
@@ -811,6 +952,7 @@ impl AppView {
                 let selected = self.selected_workflow_id == Some(id);
                 div()
                     .id(SharedString::from(format!("workflow-title-{id}")))
+                    .test_support()
                     .flex()
                     .flex_row()
                     .items_center()
@@ -1380,7 +1522,7 @@ mod tests {
     use crate::runtime::TokioRuntime;
     use crate::store::Store;
 
-    use super::{AppView, Root, Services, WorkspaceTab};
+    use super::{AppView, Root, Services};
 
     /// One run of the harness repository's workflow, with the fields the table
     /// shows.
@@ -1405,6 +1547,9 @@ mod tests {
         cx: &mut TestAppContext,
     ) -> (WindowHandle<Root>, Entity<AppView>, Entity<EditorState>) {
         cx.update(gpui_kit::init);
+        // Slides and other animations settle at once here, so a test says what
+        // it means without sleeping through them.
+        cx.update(|cx| cx.set_reduce_motion(true));
 
         let runtime = TokioRuntime::new().expect("a tokio runtime");
         let store = runtime
@@ -1627,18 +1772,36 @@ mod tests {
         let (handle, view, _editor) = workspace_page(cx);
         let handle: gpui_kit::AnyWindowHandle = handle.into();
 
-        // The table lives on the runs tab.
-        cx.update_window(handle, |_, _, cx| {
-            view.update(cx, |view, cx| {
-                view.workspace_tab = WorkspaceTab::Runs;
-                cx.notify();
-            });
+        // Shut, the page shows no drawer, and the header offers to open one.
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(window.try_find("runs-drawer").is_none());
+            assert!(window.try_find("open-runs-drawer").is_some());
+            assert_eq!(view.read_with(cx, |view, cx| view.run_rows(cx)), 2);
         })
         .unwrap();
 
+        // Opening through the link would fetch the runs on the tokio runtime,
+        // which the GPUI test scheduler refuses to observe; the test flips the
+        // view state that the link flips.
         cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.begin_drawer_open(cx);
+            });
             window.draw(cx).clear(cx);
-            assert_eq!(view.read_with(cx, |view, cx| view.run_rows(cx)), 2);
+
+            // The runs list is a drawer over the editor, not a page of its own:
+            // the workflow page stays where it is, editor included.
+            assert!(window.find("runs-drawer").visible());
+            assert!(
+                window.try_find("workflow-title-1").is_some(),
+                "the workflow page went away with the drawer open"
+            );
+            assert!(
+                window.try_find("workflow-editor-pane").is_some(),
+                "the editor was unloaded instead of covered"
+            );
+            assert!(window.try_find("close-runs-drawer").is_some());
 
             // Typing a branch into the filter leaves only that branch's runs.
             window.click("runs-branch-filter", cx);
@@ -1652,6 +1815,29 @@ mod tests {
             window.draw(cx).clear(cx);
             assert_eq!(window.find("runs-branch-filter").value(), Some("main"));
             assert_eq!(view.read_with(cx, |view, cx| view.run_rows(cx)), 1);
+
+            // Closing plays the slide out — the drawer is still in the tree,
+            // and only leaves when the slide is done.
+            view.update(cx, |view, cx| {
+                view.begin_drawer_close(cx);
+            });
+            window.draw(cx).clear(cx);
+            assert!(
+                window.try_find("runs-drawer").is_some(),
+                "the drawer vanished instead of sliding out"
+            );
+        })
+        .unwrap();
+
+        // The slide finishes on its own, and the drawer leaves with it.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(300));
+        cx.run_until_parked();
+
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(window.try_find("runs-drawer").is_none());
+            assert!(window.try_find("open-runs-drawer").is_some());
         })
         .unwrap();
     }

@@ -159,6 +159,11 @@ struct AppView {
     runs_has_more: bool,
     run_table: Entity<TableState<runs::RunTableDelegate>>,
     branch_subscription: Option<Subscription>,
+    /// Where the runs drawer stands, and which slide is allowed to finish. A
+    /// slide that has been overtaken must not take the drawer out from under the
+    /// one that replaced it.
+    drawer: workspace::DrawerPhase,
+    drawer_generation: u64,
     workspace_tab: WorkspaceTab,
     polling: bool,
     detail: Arc<Mutex<RunDetail>>,
@@ -350,6 +355,8 @@ impl AppView {
             runs_has_more: false,
             run_table,
             branch_subscription: None,
+            drawer: workspace::DrawerPhase::Closed,
+            drawer_generation: 0,
             workspace_tab: WorkspaceTab::Workflows,
             polling: false,
             detail,
