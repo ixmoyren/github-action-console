@@ -32,6 +32,7 @@ pub(super) use std::time::Duration;
 pub(super) use gpui_kit::TestSupportExt as _;
 pub(super) use gpui_kit::assets::IconName;
 pub(super) use gpui_kit::base::input::{InputEvent, InputState};
+pub(super) use gpui_kit::component::Sizable as _;
 pub(super) use gpui_kit::component::button::{Button, ButtonVariants};
 pub(super) use gpui_kit::component::checkbox::Checkbox;
 pub(super) use gpui_kit::component::input::{Editor, EditorState, Input};
@@ -47,18 +48,21 @@ pub(super) use tokio::sync::Mutex;
 pub(super) use tracing::{info, warn};
 
 pub(super) use crate::app::{
-    AppProblem, AuthManager, AuthProblem, AuthState, CreateProblem, DownloadState, Downloads,
-    LoadState, Notice, NoticeKind, PushOutcome, RepositoryList, RepositoryListState, RunDetail,
-    RunProblem, SaveProblem, Status, Workspace, WorkspaceTab, notice_for,
+    AppProblem, AuthManager, AuthProblem, AuthState, BoardSnapshot, CreateProblem, DownloadState,
+    Downloads, LoadState, ManifestState, Notice, NoticeKind, PublishProblem, PushOutcome,
+    ReleaseBoard, ReleaseFacts, RepositoryList, RepositoryListState, RunDetail, RunProblem,
+    SaveProblem, Status, Workspace, WorkspaceTab, notice_for,
 };
 pub(super) use crate::app_info::AppInfo;
 pub(super) use crate::github::GitHubGateway;
+pub(super) use crate::github::SecretToken;
 pub(super) use crate::github::client::OctocrabGateway;
 pub(super) use crate::github::{
     BuildArtifact, CommitSummary, Job, Repository, RunFilter, Workflow, WorkflowRun,
     filter_log_lines, filter_repositories, filter_runs,
 };
 pub(super) use crate::labels;
+pub(super) use crate::release::{CHANNELS, ChannelPointer};
 pub(super) use crate::runtime::TokioRuntime;
 pub(super) use crate::store::Store;
 pub(super) use crate::workflow_draft::Triggers;
@@ -92,6 +96,7 @@ struct Services {
     manager: Arc<Mutex<AuthManager>>,
     picker: Arc<Mutex<RepositoryList>>,
     workspace: Arc<Mutex<Workspace>>,
+    board: Arc<Mutex<ReleaseBoard>>,
     detail: Arc<Mutex<RunDetail>>,
     downloads: Arc<Mutex<Downloads>>,
     status: Arc<Mutex<Status>>,
@@ -100,11 +105,32 @@ struct Services {
     runtime: TokioRuntime,
 }
 
+/// The repository-scoped handles a load needs, in one bundle so the loader
+/// signatures stay readable.
+#[derive(Clone)]
+pub(super) struct ScopedHandles {
+    pub picker: Arc<Mutex<RepositoryList>>,
+    pub workspace: Arc<Mutex<Workspace>>,
+    pub board: Arc<Mutex<ReleaseBoard>>,
+}
+
 struct AppView {
     gateway: Arc<dyn GitHubGateway>,
     manager: Arc<Mutex<AuthManager>>,
     picker: Arc<Mutex<RepositoryList>>,
     workspace: Arc<Mutex<Workspace>>,
+    board: Arc<Mutex<ReleaseBoard>>,
+    /// The board, as the drawer renders it.
+    board_view: BoardSnapshot,
+    board_version: Entity<InputState>,
+    board_target: Entity<SelectState<SearchableVec<SharedString>>>,
+    board_target_options: Vec<SharedString>,
+    /// 三个事实：正在看的这次运行产出了什么。
+    release_facts: Option<ReleaseFacts>,
+    /// 清单编辑器：正在改的清单文本。
+    editing_manifest: bool,
+    manifest_editor: Entity<EditorState>,
+    manifest_editor_text: Option<String>,
     runtime: TokioRuntime,
     auth: AuthState,
     copied: bool,
@@ -163,6 +189,7 @@ struct AppView {
     /// slide that has been overtaken must not take the drawer out from under the
     /// one that replaced it.
     drawer: workspace::DrawerPhase,
+    drawer_kind: workspace::DrawerKind,
     drawer_generation: u64,
     workspace_tab: WorkspaceTab,
     polling: bool,
@@ -201,6 +228,7 @@ impl AppView {
             manager,
             picker,
             workspace,
+            board,
             detail,
             downloads,
             status,
@@ -240,6 +268,16 @@ impl AppView {
             let mut state = InputState::new(window, cx);
             state.set_placeholder(labels::LOGS_SEARCH_PLACEHOLDER, window, cx);
             state
+        });
+        let board_version = cx.new(|cx| draft_input(window, cx, labels::BOARD_VERSION_HINT));
+        let manifest_editor = cx.new(|cx| yaml_editor::yaml_editor_state(window, cx));
+        let board_target = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::<SharedString>::new(Vec::new()),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
         });
         let yaml_editor = cx.new(|cx| yaml_editor::yaml_editor_state(window, cx));
         let draft_file_name = cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_FILE_HINT));
@@ -303,6 +341,15 @@ impl AppView {
             manager,
             picker,
             workspace,
+            board,
+            board_view: BoardSnapshot::default(),
+            board_version,
+            board_target,
+            board_target_options: Vec::new(),
+            release_facts: None,
+            editing_manifest: false,
+            manifest_editor,
+            manifest_editor_text: None,
             runtime,
             auth: AuthState::LoggedOut { notice: None },
             copied: false,
@@ -356,6 +403,7 @@ impl AppView {
             run_table,
             branch_subscription: None,
             drawer: workspace::DrawerPhase::Closed,
+            drawer_kind: workspace::DrawerKind::Runs,
             drawer_generation: 0,
             workspace_tab: WorkspaceTab::Workflows,
             polling: false,

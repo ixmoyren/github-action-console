@@ -111,6 +111,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         store.clone(),
     )));
     let workspace = Arc::new(Mutex::new(Workspace::new()));
+    let board = Arc::new(Mutex::new(ReleaseBoard::new(store.clone())));
     let detail = Arc::new(Mutex::new(RunDetail::new()));
     let downloads = Arc::new(Mutex::new(Downloads::new(default_download_dir()?)));
     let status = Arc::new(Mutex::new(Status::new()));
@@ -124,6 +125,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let manager = manager.clone();
             let picker = picker.clone();
             let workspace = workspace.clone();
+            let board = board.clone();
             let detail = detail.clone();
             let downloads = downloads.clone();
             let status = status.clone();
@@ -147,6 +149,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                             manager,
                             picker,
                             workspace,
+                            board,
                             detail,
                             downloads,
                             status,

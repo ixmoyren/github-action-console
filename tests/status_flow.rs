@@ -6,8 +6,8 @@ use github_action_console::app::{
 };
 use github_action_console::github::{
     Account, BuildArtifact, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, FileContents,
-    FileWrite, GatewayError, GitHubGateway, Job, RateLimit, RepositoryPage, RepositorySort,
-    SecretToken, Workflow, WorkflowRunPage,
+    FileWrite, GatewayError, GitHubGateway, Job, PullRequest, RateLimit, ReleaseAsset,
+    RepositoryPage, RepositorySort, SecretToken, Workflow, WorkflowRunPage,
 };
 
 #[derive(Default)]
@@ -100,13 +100,35 @@ impl GitHubGateway for FakeGateway {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
 
+    async fn create_branch(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _branch: &str,
+        _from: &str,
+    ) -> Result<(), GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn open_pull_request(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _pull: PullRequest,
+    ) -> Result<u64, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
     async fn dispatch_workflow(
         &self,
         _token: &SecretToken,
         _owner: &str,
         _repository: &str,
-        _workflow_id: u64,
+        _workflow: &str,
         _reference: &str,
+        _inputs: &[(String, String)],
     ) -> Result<(), GatewayError> {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
@@ -162,6 +184,16 @@ impl GitHubGateway for FakeGateway {
     }
 
     fn set_proxy(&self, _proxy: Option<String>) {}
+
+    async fn release_assets(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _tag: &str,
+    ) -> Result<Vec<ReleaseAsset>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
 
     async fn rate_limit(&self, _token: &SecretToken) -> Result<RateLimit, GatewayError> {
         self.limits

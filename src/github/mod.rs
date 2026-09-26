@@ -153,6 +153,14 @@ pub struct FileWrite {
     pub sha: Option<String>,
 }
 
+/// A pull request to open: what it says, where it comes from, where it goes.
+pub struct PullRequest {
+    pub title: String,
+    pub body: String,
+    pub head: String,
+    pub base: String,
+}
+
 /// GitHub's coarse run status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStatus {
@@ -244,6 +252,16 @@ pub struct BuildArtifact {
     pub size_in_bytes: u64,
     pub expired: bool,
     pub download_url: Option<String>,
+}
+
+/// A file attached to a release: what a published version actually carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseAsset {
+    pub name: String,
+    pub size_in_bytes: u64,
+    pub download_url: Option<String>,
+    /// When the asset was attached: the moment "已发布" became true.
+    pub created_at: Option<String>,
 }
 
 /// Keep only the log lines matching `query` (case-insensitive). An empty query
@@ -392,15 +410,35 @@ pub trait GitHubGateway: Send + Sync {
         write: FileWrite,
     ) -> Result<(), GatewayError>;
 
-    /// Trigger a `workflow_dispatch` run of `workflow_id` on `reference`, a
-    /// branch or tag name.
+    /// Create a branch whose head is where `from` points right now.
+    async fn create_branch(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        branch: &str,
+        from: &str,
+    ) -> Result<(), GatewayError>;
+
+    /// Open a pull request, returning its number.
+    async fn open_pull_request(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        pull: PullRequest,
+    ) -> Result<u64, GatewayError>;
+
+    /// Trigger a `workflow_dispatch` run of `workflow` — its file name or its
+    /// id — on `reference`, with the given inputs.
     async fn dispatch_workflow(
         &self,
         token: &SecretToken,
         owner: &str,
         repository: &str,
-        workflow_id: u64,
+        workflow: &str,
         reference: &str,
+        inputs: &[(String, String)],
     ) -> Result<(), GatewayError>;
 
     /// All runs in the repository, or the runs of one workflow when
@@ -457,6 +495,16 @@ pub trait GitHubGateway: Send + Sync {
         repository: &str,
         artifact_id: u64,
     ) -> Result<Vec<u8>, GatewayError>;
+
+    /// The assets a release carries, by tag. A tag without a release is
+    /// `NotFound`, which is a fact about publishing, not a failure.
+    async fn release_assets(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        tag: &str,
+    ) -> Result<Vec<ReleaseAsset>, GatewayError>;
 
     /// The core rate-limit budget for the current credentials.
     async fn rate_limit(&self, token: &SecretToken) -> Result<RateLimit, GatewayError>;

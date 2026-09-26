@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Account, BuildArtifact, CommitSummary, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart,
-    FileContents, FileWrite, GatewayError, GitHubGateway, Job, RateLimit, Repository,
-    RepositoryPage, RepositorySort, RunStatus, SecretToken, Step, Workflow, WorkflowRun,
-    WorkflowRunPage,
+    FileContents, FileWrite, GatewayError, GitHubGateway, Job, PullRequest, RateLimit,
+    ReleaseAsset, Repository, RepositoryPage, RepositorySort, RunStatus, SecretToken, Step,
+    Workflow, WorkflowRun, WorkflowRunPage,
 };
 
 const DEFAULT_BASE_URI: &str = "https://github.com";
@@ -264,17 +264,74 @@ impl GitHubGateway for OctocrabGateway {
         Ok(())
     }
 
+    async fn create_branch(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        branch: &str,
+        from: &str,
+    ) -> Result<(), GatewayError> {
+        let crab = user_client(token)?;
+        let repos = crab.repos(owner, repository);
+        let base = repos
+            .get_ref(&octocrab::params::repos::Reference::Branch(from.to_owned()))
+            .await
+            .map_err(map_error)?;
+        let head = match base.object {
+            octocrab::models::repos::Object::Commit { sha, .. }
+            | octocrab::models::repos::Object::Tag { sha, .. }
+            | octocrab::models::repos::Object::Tree { sha, .. }
+            | octocrab::models::repos::Object::Blob { sha, .. } => sha,
+            // `Object` is non-exhaustive; a shape this adapter does not know is
+            // not a branch head we can start from.
+            _ => return Err(GatewayError::Unexpected("unknown git object".to_owned())),
+        };
+        repos
+            .create_ref(
+                &octocrab::params::repos::Reference::Branch(branch.to_owned()),
+                head,
+            )
+            .await
+            .map_err(map_error)?;
+        Ok(())
+    }
+
+    async fn open_pull_request(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        pull: PullRequest,
+    ) -> Result<u64, GatewayError> {
+        let crab = user_client(token)?;
+        let opened = crab
+            .pulls(owner, repository)
+            .create(&pull.title, &pull.head, &pull.base)
+            .body(&pull.body)
+            .send()
+            .await
+            .map_err(map_error)?;
+        Ok(opened.number)
+    }
+
     async fn dispatch_workflow(
         &self,
         token: &SecretToken,
         owner: &str,
         repository: &str,
-        workflow_id: u64,
+        workflow: &str,
         reference: &str,
+        inputs: &[(String, String)],
     ) -> Result<(), GatewayError> {
         let crab = user_client(token)?;
+        let payload = inputs
+            .iter()
+            .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
+            .collect::<serde_json::Map<_, _>>();
         crab.actions()
-            .create_workflow_dispatch(owner, repository, workflow_id.to_string(), reference)
+            .create_workflow_dispatch(owner, repository, workflow, reference)
+            .inputs(serde_json::Value::Object(payload))
             .send()
             .await
             .map_err(map_error)
@@ -430,6 +487,33 @@ impl GitHubGateway for OctocrabGateway {
                 None => unsafe { std::env::remove_var(key) },
             }
         }
+    }
+
+    async fn release_assets(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        tag: &str,
+    ) -> Result<Vec<ReleaseAsset>, GatewayError> {
+        let crab = user_client(token)?;
+        let release = crab
+            .repos(owner, repository)
+            .releases()
+            .get_by_tag(tag)
+            .await
+            .map_err(map_error)?;
+
+        Ok(release
+            .assets
+            .into_iter()
+            .map(|asset| ReleaseAsset {
+                name: asset.name,
+                size_in_bytes: asset.size.max(0) as u64,
+                download_url: Some(asset.browser_download_url.to_string()),
+                created_at: Some(asset.created_at.to_rfc3339()),
+            })
+            .collect())
     }
 
     async fn rate_limit(&self, token: &SecretToken) -> Result<RateLimit, GatewayError> {

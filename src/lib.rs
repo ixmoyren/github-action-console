@@ -3,6 +3,7 @@ pub mod app_info;
 pub mod credentials;
 pub mod github;
 pub mod labels;
+pub mod release;
 pub mod runtime;
 pub mod store;
 pub mod ui;

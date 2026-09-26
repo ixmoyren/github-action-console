@@ -194,6 +194,7 @@ impl AppView {
         let manager = self.manager.clone();
         let picker = self.picker.clone();
         let workspace = self.workspace.clone();
+        let board = self.board.clone();
         let runtime = self.runtime.clone();
         let default_branch = self
             .repos
@@ -223,7 +224,16 @@ impl AppView {
                 warn!(%error, "a background task did not finish");
             }
 
-            Self::load_workspace(&gateway, &manager, &workspace, &runtime, &this, cx).await;
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+            let handles = ScopedHandles {
+                picker: picker.clone(),
+                workspace: workspace.clone(),
+                board: board.clone(),
+            };
+            Self::load_workspace(&gateway, &token, &handles, &runtime, &this, cx).await;
         })
         .detach();
     }

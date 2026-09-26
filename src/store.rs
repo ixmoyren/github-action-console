@@ -5,6 +5,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use thiserror::Error;
 
 use crate::github::Account;
+use crate::release::{BuildDispatch, ChannelPointer};
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -61,6 +62,34 @@ impl Store {
             "CREATE TABLE IF NOT EXISTS preference (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        // 通道指针：一个 (仓库, 发布目标, 通道) 指向一个发布版本（ADR-0005）。
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS channel_pointer (
+                repository TEXT NOT NULL,
+                target TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                version TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (repository, target, channel)
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        // 控制台自己触发的构建：dispatch 的返回值里没有 run id，所以在 run 列表里
+        // 认领到之后再补上（见 ReleaseBoard::bind_dispatches）。
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS build_dispatch (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                repository TEXT NOT NULL,
+                target TEXT NOT NULL,
+                version TEXT NOT NULL,
+                config TEXT NOT NULL,
+                dispatched_at TEXT NOT NULL,
+                run_id INTEGER
             )",
         )
         .execute(&self.pool)
@@ -130,6 +159,114 @@ impl Store {
     pub async fn clear_preference(&self, key: &str) -> Result<(), StoreError> {
         sqlx::query("DELETE FROM preference WHERE key = ?")
             .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Point one channel at one release version for one release target.
+    pub async fn save_channel_pointer(&self, pointer: &ChannelPointer) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO channel_pointer (repository, target, channel, version, updated_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(repository, target, channel) DO UPDATE SET
+                version = excluded.version,
+                updated_at = excluded.updated_at",
+        )
+        .bind(&pointer.repository)
+        .bind(&pointer.target)
+        .bind(&pointer.channel)
+        .bind(&pointer.version)
+        .bind(&pointer.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Every pointer a repository has, ordered target then channel so the board
+    /// can lay them out the same way every time.
+    pub async fn load_channel_pointers(
+        &self,
+        repository: &str,
+    ) -> Result<Vec<ChannelPointer>, StoreError> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
+            "SELECT repository, target, channel, version, updated_at
+             FROM channel_pointer
+             WHERE repository = ?
+             ORDER BY target, channel",
+        )
+        .bind(repository)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(repository, target, channel, version, updated_at)| ChannelPointer {
+                    repository,
+                    target,
+                    channel,
+                    version,
+                    updated_at,
+                },
+            )
+            .collect())
+    }
+
+    /// Record a build the console asked for, and return it with its row id.
+    pub async fn record_dispatch(&self, dispatch: &BuildDispatch) -> Result<i64, StoreError> {
+        let id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO build_dispatch (repository, target, version, config, dispatched_at, run_id)
+             VALUES (?, ?, ?, ?, ?, ?)
+             RETURNING id",
+        )
+            .bind(&dispatch.repository)
+            .bind(&dispatch.target)
+            .bind(&dispatch.version)
+            .bind(&dispatch.config)
+            .bind(&dispatch.dispatched_at)
+            .bind(dispatch.run_id.map(|id| id as i64))
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(id)
+    }
+
+    /// The dispatches a repository has, oldest first.
+    pub async fn load_dispatches(
+        &self,
+        repository: &str,
+    ) -> Result<Vec<BuildDispatch>, StoreError> {
+        let rows = sqlx::query_as::<_, (i64, String, String, String, String, String, Option<i64>)>(
+            "SELECT id, repository, target, version, config, dispatched_at, run_id
+             FROM build_dispatch
+             WHERE repository = ?
+             ORDER BY id",
+        )
+        .bind(repository)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, repository, target, version, config, dispatched_at, run_id)| BuildDispatch {
+                    id,
+                    repository,
+                    target,
+                    version,
+                    config,
+                    dispatched_at,
+                    run_id: run_id.map(|id| id as u64),
+                },
+            )
+            .collect())
+    }
+
+    /// Attach a run id to a dispatch the run list just proved.
+    pub async fn bind_dispatch(&self, id: i64, run_id: u64) -> Result<(), StoreError> {
+        sqlx::query("UPDATE build_dispatch SET run_id = ? WHERE id = ?")
+            .bind(run_id as i64)
+            .bind(id)
             .execute(&self.pool)
             .await?;
         Ok(())

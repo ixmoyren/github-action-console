@@ -8,10 +8,18 @@ use github_action_console::app::{
 };
 use github_action_console::github::{
     Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, FileContents, FileWrite,
-    GatewayError, GitHubGateway, RepositoryPage, RepositorySort, RunStatus, RunStatusFilter,
-    SecretToken, Workflow, WorkflowRun, WorkflowRunPage,
+    GatewayError, GitHubGateway, PullRequest, ReleaseAsset, RepositoryPage, RepositorySort,
+    RunStatus, RunStatusFilter, SecretToken, Workflow, WorkflowRun, WorkflowRunPage,
 };
 use github_action_console::workflow_draft::{DraftProblem, JobDraft, Triggers, WorkflowDraft};
+
+/// One workflow dispatch the console asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Dispatch {
+    workflow: String,
+    reference: String,
+    inputs: Vec<(String, String)>,
+}
 
 #[derive(Default)]
 struct FakeGateway {
@@ -21,7 +29,7 @@ struct FakeGateway {
     runner_labels: Mutex<VecDeque<Result<Vec<String>, GatewayError>>>,
     writes: Mutex<Vec<FileWrite>>,
     write_results: Mutex<VecDeque<Result<(), GatewayError>>>,
-    dispatches: Mutex<Vec<(u64, String)>>,
+    dispatches: Mutex<Vec<Dispatch>>,
     dispatch_results: Mutex<VecDeque<Result<(), GatewayError>>>,
     run_pages: Mutex<VecDeque<Result<WorkflowRunPage, GatewayError>>>,
     run_requests: Mutex<Vec<(Option<u64>, u32)>>,
@@ -64,7 +72,17 @@ impl FakeGateway {
     }
 
     fn dispatches(&self) -> Vec<(u64, String)> {
-        self.dispatches.lock().unwrap().clone()
+        self.dispatches
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|dispatch| {
+                (
+                    dispatch.workflow.parse().unwrap_or_default(),
+                    dispatch.reference.clone(),
+                )
+            })
+            .collect()
     }
 
     fn push_runs(&self, response: Result<WorkflowRunPage, GatewayError>) {
@@ -185,18 +203,41 @@ impl GitHubGateway for FakeGateway {
             )))
     }
 
+    async fn create_branch(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _branch: &str,
+        _from: &str,
+    ) -> Result<(), GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn open_pull_request(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _pull: PullRequest,
+    ) -> Result<u64, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
     async fn dispatch_workflow(
         &self,
         _token: &SecretToken,
         _owner: &str,
         _repository: &str,
-        workflow_id: u64,
+        workflow: &str,
         reference: &str,
+        inputs: &[(String, String)],
     ) -> Result<(), GatewayError> {
-        self.dispatches
-            .lock()
-            .unwrap()
-            .push((workflow_id, reference.to_owned()));
+        self.dispatches.lock().unwrap().push(Dispatch {
+            workflow: workflow.to_owned(),
+            reference: reference.to_owned(),
+            inputs: inputs.to_vec(),
+        });
         self.dispatch_results
             .lock()
             .unwrap()
@@ -257,6 +298,16 @@ impl GitHubGateway for FakeGateway {
     }
 
     fn set_proxy(&self, _proxy: Option<String>) {}
+
+    async fn release_assets(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _tag: &str,
+    ) -> Result<Vec<ReleaseAsset>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
 
     async fn rate_limit(
         &self,

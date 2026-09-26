@@ -499,7 +499,14 @@ impl Workspace {
 
         info!(workflow_id, %reference, "dispatching a workflow run");
         gateway
-            .dispatch_workflow(token, &owner, &repository, workflow_id, &reference)
+            .dispatch_workflow(
+                token,
+                &owner,
+                &repository,
+                &workflow_id.to_string(),
+                &reference,
+                &[],
+            )
             .await
             .map_err(|error| RunProblem::Gateway(AppProblem::from_gateway(&error)))
     }

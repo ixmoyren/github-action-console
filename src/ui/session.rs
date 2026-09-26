@@ -64,17 +64,18 @@ impl AppView {
     }
     pub(super) async fn load_repositories(
         gateway: &Arc<dyn GitHubGateway>,
-        manager: &Arc<Mutex<AuthManager>>,
-        picker: &Arc<Mutex<RepositoryList>>,
-        workspace: &Arc<Mutex<Workspace>>,
+        token: &SecretToken,
+        handles: &ScopedHandles,
         runtime: &TokioRuntime,
         this: &WeakEntity<AppView>,
         cx: &mut AsyncApp,
     ) {
-        let token = { manager.lock().await.token() };
-        let Some(token) = token else {
-            return;
-        };
+        let ScopedHandles {
+            picker,
+            workspace,
+            board: _,
+        } = handles;
+        let token = token.clone();
 
         let task = runtime.spawn({
             let picker = picker.clone();
@@ -88,6 +89,7 @@ impl AppView {
 
         let task = runtime.spawn({
             let picker = picker.clone();
+            let token = token.clone();
             async move {
                 picker.lock().await.reload(&token).await;
             }
@@ -114,7 +116,7 @@ impl AppView {
                 warn!(%error, "a background task did not finish");
             }
 
-            Self::load_workspace(gateway, manager, workspace, runtime, this, cx).await;
+            Self::load_workspace(gateway, &token.clone(), handles, runtime, this, cx).await;
         }
     }
     pub(super) fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -196,6 +198,7 @@ impl AppView {
         let manager = self.manager.clone();
         let picker = self.picker.clone();
         let workspace = self.workspace.clone();
+        let board = self.board.clone();
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let task = runtime.spawn({
@@ -275,10 +278,17 @@ impl AppView {
                 };
                 if finished {
                     if authenticated {
-                        Self::load_repositories(
-                            &gateway, &manager, &picker, &workspace, &runtime, &this, cx,
-                        )
-                        .await;
+                        let token = { manager.lock().await.token() };
+                        let Some(token) = token else {
+                            return;
+                        };
+                        let handles = ScopedHandles {
+                            picker: picker.clone(),
+                            workspace: workspace.clone(),
+                            board: board.clone(),
+                        };
+                        Self::load_repositories(&gateway, &token, &handles, &runtime, &this, cx)
+                            .await;
                         let login = match manager.lock().await.state() {
                             AuthState::Authenticated { account } => Some(account.login.clone()),
                             _ => None,
@@ -301,6 +311,7 @@ impl AppView {
         let manager = self.manager.clone();
         let picker = self.picker.clone();
         let workspace = self.workspace.clone();
+        let board = self.board.clone();
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let task = runtime.spawn({
@@ -323,10 +334,16 @@ impl AppView {
             };
 
             if authenticated {
-                Self::load_repositories(
-                    &gateway, &manager, &picker, &workspace, &runtime, &this, cx,
-                )
-                .await;
+                let token = { manager.lock().await.token() };
+                let Some(token) = token else {
+                    return;
+                };
+                let handles = ScopedHandles {
+                    picker: picker.clone(),
+                    workspace: workspace.clone(),
+                    board: board.clone(),
+                };
+                Self::load_repositories(&gateway, &token, &handles, &runtime, &this, cx).await;
                 let login = match manager.lock().await.state() {
                     AuthState::Authenticated { account } => Some(account.login.clone()),
                     _ => None,
@@ -347,10 +364,19 @@ impl AppView {
         let manager = self.manager.clone();
         let picker = self.picker.clone();
         let workspace = self.workspace.clone();
+        let board = self.board.clone();
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
-            Self::load_repositories(&gateway, &manager, &picker, &workspace, &runtime, &this, cx)
-                .await;
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+            let handles = ScopedHandles {
+                picker: picker.clone(),
+                workspace: workspace.clone(),
+                board: board.clone(),
+            };
+            Self::load_repositories(&gateway, &token, &handles, &runtime, &this, cx).await;
             let login = match manager.lock().await.state() {
                 AuthState::Authenticated { account } => Some(account.login.clone()),
                 _ => None,
@@ -371,6 +397,7 @@ impl AppView {
         let manager = self.manager.clone();
         let picker = self.picker.clone();
         let workspace = self.workspace.clone();
+        let board = self.board.clone();
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let task = runtime.spawn({
@@ -395,8 +422,10 @@ impl AppView {
 
             let task = runtime.spawn({
                 let workspace = workspace.clone();
+                let board = board.clone();
                 async move {
                     workspace.lock().await.leave();
+                    board.lock().await.leave();
                 }
             });
             if let Err(error) = task.await {

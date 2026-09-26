@@ -14,3 +14,7 @@
 - [ ] `upload-artifact` 上传构建产物；tag 触发时 `gh release create/upload` 挂发布资产
 - [ ] run 的日志里能看到本次的 target / version / config（可追溯的输入）
 - [ ] 至少一次真实运行记录（run 链接）留存为演示材料
+
+## Comments
+
+草案已写好并本地校验过 YAML：`plan`（读清单出矩阵与版本）+ `build`（按目标独立 job，fail-fast: false，dmg / 未签名 pkg / WiX msi / tar.gz，upload-artifact，模拟步骤用 ::warning:: 标注）+ `release`（tag 触发时 gh release create/upload）。 **仍缺一次真实运行**：需要推到有 Actions 的仓库跑一遍并留存 run 链接。

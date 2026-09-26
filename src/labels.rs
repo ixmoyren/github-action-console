@@ -56,6 +56,36 @@ pub const WORKSPACE_WORKFLOWS: &str = "工作流";
 pub const WORKSPACE_RUNS: &str = "运行";
 pub const WORKSPACE_RUN_HISTORY: &str = "← 运行记录";
 pub const WORKSPACE_RUN_HISTORY_CLOSE: &str = "关闭运行记录 →";
+pub const WORKSPACE_BOARD: &str = "发布看板 →";
+pub const WORKSPACE_BOARD_CLOSE: &str = "关闭看板";
+
+pub const BOARD_VERSION: &str = "版本";
+pub const BOARD_VERSION_HINT: &str = "例如 v0.1.0";
+pub const BOARD_TARGET: &str = "发布目标";
+pub const BOARD_TRIGGER: &str = "触发构建";
+pub const BOARD_PUBLISH: &str = "发布";
+pub const BOARD_SIMULATED: &str = "模拟";
+pub const BOARD_MISSING: &str = "该仓库还没有发布清单（.github/release-console.yml）。";
+pub const BOARD_INVALID: &str = "发布清单读不出来";
+pub const BOARD_LOADING: &str = "正在读取发布清单…";
+pub const BOARD_EMPTY_CELL: &str = "—";
+pub const BOARD_TRIGGERED: &str = "已触发构建，等待 runner。";
+pub const BOARD_TRIGGER_NO_MANIFEST: &str = "该仓库没有可用的发布清单，无法触发构建。";
+pub const BOARD_TRIGGER_UNKNOWN_TARGET: &str = "清单里没有这个发布目标。";
+pub const BOARD_PUBLISHED: &str = "已把该版本登记到这条通道。";
+pub const BOARD_PUBLISH_NEEDS_ASSETS: &str =
+    "该版本还没有这个目标的发布资产，不能登记发布（构建成功不等于已发布）。";
+pub const BOARD_PUBLISH_UNKNOWN_TARGET: &str = "清单里没有这个发布目标。";
+pub const BOARD_NO_VERSION: &str = "先在上面填一个版本。";
+pub const BOARD_STORE_FAILED: &str = "本地记录失败，请重试。";
+pub const BOARD_MANIFEST_EDIT: &str = "编辑清单";
+pub const BOARD_MANIFEST_CANCEL: &str = "取消编辑";
+pub const BOARD_MANIFEST_TITLE: &str = "发布清单";
+pub const BOARD_MANIFEST_SUBMIT: &str = "提交为 PR";
+pub const BOARD_MANIFEST_NO_TEXT: &str = "还没有读到清单，先刷新再看。";
+pub const BOARD_MANIFEST_NO_BASE: &str = "不知道默认分支，无法提交。";
+pub const BOARD_MANIFEST_NO_REPOSITORY: &str = "没有选中的仓库，无法提交。";
+pub const BOARD_MANIFEST_SUBMITTED: &str = "已提交为 PR";
 pub const WORKSPACE_COMING_SOON: &str = "即将推出。";
 
 pub const PROBLEM_RATE_LIMITED: &str = "已触发 GitHub 限流，请稍后重试。";
@@ -193,6 +223,20 @@ pub const RESUME_TITLE: &str = "登录仍然有效";
 pub const RESUME_BODY: &str = "上次登录仍然有效，是否直接进入应用？";
 pub const RESUME_YES: &str = "是";
 pub const RESUME_NO: &str = "否";
+
+pub const RELEASE_FACTS_TITLE: &str = "发布事实";
+pub const RELEASE_FACTS_VERSION: &str = "版本";
+pub const RELEASE_FACTS_TARGET: &str = "发布目标";
+pub const RELEASE_FACTS_CONFIG: &str = "打包配置";
+pub const RELEASE_FACTS_BUILT: &str = "构建完成";
+pub const RELEASE_FACTS_ASSETS: &str = "产物可获取";
+pub const RELEASE_FACTS_PUBLISHED: &str = "已登记发布";
+pub const RELEASE_FACTS_UNKNOWN: &str =
+    "这次运行不是控制台触发的，无法确定它对应的发布版本与目标。";
+pub const RELEASE_FACTS_NOTHING: &str = "还没有";
+pub const RELEASE_FACTS_CHANNEL: &str = "通道";
+
+pub const RELEASE_ASSETS_LABEL: &str = "发布资产";
 
 #[cfg(test)]
 mod tests {

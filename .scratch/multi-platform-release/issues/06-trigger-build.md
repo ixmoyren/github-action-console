@@ -12,3 +12,7 @@
 - [ ] 提交后立刻进入该 run 的追踪视图
 - [ ] 失败（无 workflow、无权限、目标非法）给出可读原因，不静默
 - [ ] fake gateway 测试：dispatch 收到的 inputs 与表单一致；非法组合在触达 GitHub 前就被挡住
+
+## Comments
+
+已实现：`ReleaseBoard::trigger` 按清单发 `workflow_dispatch`（inputs：target/version/config + 配置模板里的键），本次触发记进 `build_dispatch` 表，并在 run 列表里认领 run id（`bind_dispatches`）；看板顶部有 版本 / 目标 / 触发 三件套。

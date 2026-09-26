@@ -35,6 +35,7 @@ impl AppView {
         let manager = self.manager.clone();
         let detail = self.detail.clone();
         let workspace = self.workspace.clone();
+        let board = self.board.clone();
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let repository = { workspace.lock().await.repository().map(str::to_owned) };
@@ -62,6 +63,7 @@ impl AppView {
             let task = runtime.spawn({
                 let gateway = gateway.clone();
                 let detail = detail.clone();
+                let token = token.clone();
                 async move {
                     detail.lock().await.load_jobs(&*gateway, &token).await;
                 }
@@ -72,7 +74,29 @@ impl AppView {
 
             Self::refresh_detail(&detail, &this, cx).await;
 
+            // 这次运行产出了什么：只有控制台触发过的运行才认得出它的版本与目标。
+            let run_id = run.id;
+            let facts = runtime
+                .spawn({
+                    let gateway = gateway.clone();
+                    let board = board.clone();
+                    let token = token.clone();
+                    async move {
+                        board
+                            .lock()
+                            .await
+                            .facts_for_run(&*gateway, &token, run_id)
+                            .await
+                    }
+                })
+                .await
+                .unwrap_or_else(|error| {
+                    warn!(%error, "a background task did not finish");
+                    None
+                });
+
             if let Err(error) = this.update(cx, |this, cx| {
+                this.release_facts = facts;
                 this.artifacts_state = LoadState::Loading;
                 this.load_artifacts(cx);
             }) {
@@ -106,6 +130,7 @@ impl AppView {
                 this.logs_copied = false;
                 this.artifacts.clear();
                 this.artifacts_state = LoadState::Idle;
+                this.release_facts = None;
                 this.download_state = DownloadState::Idle;
                 cx.notify();
             }) {
@@ -330,6 +355,55 @@ impl AppView {
             .collect::<Vec<_>>();
         panel = panel.child(div().flex().flex_col().gap_2().children(artifact_rows));
 
+        // 三个事实分开写：跑完了 / 能下载什么 / 有没有登记发布。
+        let open_run = self
+            .open_run
+            .and_then(|id| self.runs.iter().find(|run| run.id == id));
+        panel = panel.child(pickable(labels::RELEASE_FACTS_TITLE));
+        match &self.release_facts {
+            Some(facts) => {
+                panel = panel.child(pickable(format!(
+                    "{}：{}｜{}：{}｜{}：{}",
+                    labels::RELEASE_FACTS_VERSION,
+                    facts.version,
+                    labels::RELEASE_FACTS_TARGET,
+                    facts.target,
+                    labels::RELEASE_FACTS_CONFIG,
+                    facts.config
+                )));
+                panel = panel.child(
+                    Label::new(format!(
+                        "{}：{}",
+                        labels::RELEASE_FACTS_BUILT,
+                        run_state_text(open_run)
+                    ))
+                    .text_sm(),
+                );
+                panel = panel.child(
+                    Label::new(format!(
+                        "{}：{}",
+                        labels::RELEASE_FACTS_ASSETS,
+                        facts_assets_text(facts, &self.artifacts)
+                    ))
+                    .text_sm(),
+                );
+                panel = panel.child(
+                    Label::new(format!(
+                        "{}：{}",
+                        labels::RELEASE_FACTS_PUBLISHED,
+                        facts_published_text(facts)
+                    ))
+                    .text_sm(),
+                );
+                if let Some(problem) = facts.problem {
+                    panel = panel.child(Label::new(problem_text(problem)).text_sm());
+                }
+            }
+            None => {
+                panel = panel.child(Label::new(labels::RELEASE_FACTS_UNKNOWN).text_sm());
+            }
+        }
+
         panel = panel.child(
             Button::new("download-run-logs")
                 .label(labels::RUN_LOGS_DOWNLOAD)
@@ -390,4 +464,60 @@ impl AppView {
 
         panel.into_any_element()
     }
+}
+
+/// 构建完成这一条：这次运行自己的状态与结论。
+fn run_state_text(run: Option<&WorkflowRun>) -> String {
+    match run {
+        Some(run) => format!(
+            "{}（{}）",
+            labels::conclusion_label(run.conclusion.as_deref()),
+            run.status.label()
+        ),
+        None => labels::VALUE_MISSING.to_owned(),
+    }
+}
+
+/// 产物可获取这一条：构建产物（临时）与发布资产（可下载）分别多少。
+fn facts_assets_text(facts: &ReleaseFacts, artifacts: &[BuildArtifact]) -> String {
+    let expired = artifacts.iter().filter(|artifact| artifact.expired).count();
+    let mut text = format!(
+        "{} {}｜{} {}",
+        labels::ARTIFACTS_TITLE,
+        artifacts.len(),
+        labels::RELEASE_ASSETS_LABEL,
+        facts.assets.len()
+    );
+    if expired > 0 {
+        text.push_str(&format!("（{} 个 {}）", expired, labels::ARTIFACTS_EXPIRED));
+    }
+    for asset in &facts.assets {
+        let when = asset
+            .created_at
+            .as_deref()
+            .map(super::repositories::format_commit_date)
+            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned());
+        text.push_str(&format!("\n· {}（{}）", asset.name, when));
+    }
+    text
+}
+
+/// 已登记发布这一条：哪些通道现在指向这个版本。
+fn facts_published_text(facts: &ReleaseFacts) -> String {
+    if facts.pointers.is_empty() {
+        return labels::RELEASE_FACTS_NOTHING.to_owned();
+    }
+    facts
+        .pointers
+        .iter()
+        .map(|pointer| {
+            format!(
+                "{} {}（{}）",
+                labels::RELEASE_FACTS_CHANNEL,
+                pointer.channel,
+                super::repositories::format_commit_date(&pointer.updated_at)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("｜")
 }

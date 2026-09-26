@@ -10,3 +10,7 @@
 - [ ] `cargo install --target` 交叉构建 arm64 / x86_64 都能成功
 - [ ] 打包模板：`demo-client/packaging/windows/main.wxs`（WiX，变量化的 exe 路径与版本）
 - [ ] README 说明它是示例客户端、如何构建、哪里是真实/模拟
+
+## Comments
+
+已实现骨架：`demo-client/`（独立 Cargo 包、build.rs 注入版本/target/打包配置、`cargo test` 通过）+ WiX 草案 + README 的真实/模拟表。打包命令在 `.github/workflows/release-target.yml`。
