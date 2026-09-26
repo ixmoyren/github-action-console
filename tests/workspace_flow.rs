@@ -11,6 +11,7 @@ use github_action_console::github::{
     GatewayError, GitHubGateway, PullRequest, ReleaseAsset, RepositoryPage, RepositorySort,
     RunStatus, RunStatusFilter, SecretToken, Workflow, WorkflowRun, WorkflowRunPage,
 };
+use github_action_console::release_template;
 use github_action_console::workflow_draft::{DraftProblem, JobDraft, Triggers, WorkflowDraft};
 
 /// One workflow dispatch the console asked for.
@@ -600,6 +601,45 @@ async fn adopting_the_release_template_writes_it_to_the_workflows_directory() {
     assert!(writes[0].contents.contains("octo/alpha"));
     assert!(writes[0].contents.contains("gh release upload"));
     assert!(writes[0].message.contains("发布模板"));
+}
+
+/// 采用模板之后，仓库里真的多了一条工作流：名字用模板里的那一行，并且它就在屏幕上。
+#[tokio::test]
+async fn adopting_the_release_template_opens_the_workflow_it_just_wrote() {
+    let gateway = Arc::new(FakeGateway::default());
+    // 先查这个名字是不是空的，再写，写完列表里就有它了，最后把正文读回来。
+    gateway.push_file(Err(GatewayError::NotFound));
+    gateway.push_write(Ok(()));
+    gateway.push_workflows(Ok(vec![workflow(11, "release-target")]));
+    gateway.push_file_text("name: Release target\n", "sha-1");
+    let mut workspace = entered("octo/alpha");
+    let contents = release_template::for_repository("octo/alpha");
+
+    let outcome = workspace
+        .push_workflow_file(
+            &*gateway,
+            &token(),
+            release_template::TEMPLATE_PATH,
+            &contents,
+            "发布模板",
+        )
+        .await;
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    // 工作流的名字来自模板：`name:` 那一行原样写进去，不另起名字。
+    let name_line = release_template::TEMPLATE
+        .lines()
+        .find(|line| line.starts_with("name:"))
+        .expect("模板里有 name:");
+    let writes = gateway.writes();
+    assert_eq!(writes.len(), 1);
+    assert!(
+        writes[0].contents.contains(name_line),
+        "写进去的不是模板里那个名字：{name_line:?}"
+    );
+    // 新建的这一条就是屏幕上的那一条。
+    assert_eq!(workspace.selected_workflow_id(), Some(11));
+    assert_eq!(workspace.workflow_file(), Some("name: Release target\n"));
 }
 
 #[tokio::test]

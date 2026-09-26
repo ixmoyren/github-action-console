@@ -105,8 +105,8 @@ pub const WORKFLOW_SAVE_NO_BRANCH: &str = "无法确定该仓库的默认分支�
 
 pub const WORKFLOW_TEMPLATE_TITLE: &str = "多平台发布模板";
 pub const WORKFLOW_TEMPLATE_SAVE: &str = "保存模板";
-pub const WORKFLOW_TEMPLATE_SAVED: &str = "发布模板已写入仓库。";
-pub const WORKFLOW_TEMPLATE_REPLACED: &str = "已覆盖仓库里的发布模板。";
+pub const WORKFLOW_TEMPLATE_SAVED: &str = "已用发布模板新建工作流并推送到默认分支。";
+pub const WORKFLOW_TEMPLATE_REPLACED: &str = "已用发布模板覆盖仓库里的同名工作流并推送到默认分支。";
 pub const WORKFLOW_TEMPLATE_HINT: &str = "写入 .github/workflows/release-target.yml：Windows / macOS-Intel / macOS-Arm / Linux 一起构建，tag 触发时把产物挂到 Release。文件已存在就覆盖。";
 
 pub const WORKFLOW_NEW: &str = "新建工作流";
@@ -144,7 +144,7 @@ pub const WORKFLOW_NEW_JOB_COMMAND_HINT: &str = "例如 npm test";
 pub const WORKFLOW_NEW_CRON_HINT: &str = "例如 0 3 * * *";
 pub const WORKFLOW_NEW_PUSHED: &str = "已创建工作流并推送到默认分支。";
 pub const WORKFLOW_NEW_REPLACED: &str = "已覆盖仓库里的同名工作流并推送到默认分支。";
-pub const WORKFLOW_NEW_USE_TEMPLATE: &str = "改用发布模板";
+pub const WORKFLOW_NEW_USE_TEMPLATE: &str = "使用发布模板";
 pub const WORKFLOW_NEW_SAVED_LOCALLY: &str = "已保存到本地";
 pub const WORKFLOW_NEW_SAVE_FAILED: &str = "保存到本地失败。";
 pub const WORKFLOW_NEW_NO_TRIGGER: &str = "至少选择一种触发方式。";

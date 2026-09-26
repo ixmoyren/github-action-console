@@ -1317,6 +1317,27 @@ impl AppView {
     /// 把编辑器里的模板写进仓库：有就覆盖，没有就新建。
     pub(super) fn save_release_template(&mut self, cx: &mut Context<Self>) {
         let contents = self.template_editor.read(cx).value().to_string();
+        self.push_release_template(contents, false, cx);
+    }
+
+    /// 采用发布模板：不绕去看一眼，直接把模板写成仓库里的一条工作流并推送。
+    ///
+    /// 文件名与工作流名都来自模板本身（`release-target.yml` 与它 `name:` 那一行），
+    /// 所以生成的这条工作流在 GitHub 上就叫模板里的名字，不再另起一个。
+    pub(super) fn create_workflow_from_template(&mut self, cx: &mut Context<Self>) {
+        let contents =
+            release_template::for_repository(self.selected.as_deref().unwrap_or_default());
+        self.push_release_template(contents, true, cx);
+    }
+
+    /// 把一段模板文本写进仓库：有就覆盖，没有就新建。`close_form` 为真时，写完离开
+    /// 新建工作流的表单——这一下本来就是"用它建一条"。
+    fn push_release_template(
+        &mut self,
+        contents: String,
+        close_form: bool,
+        cx: &mut Context<Self>,
+    ) {
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
         let workspace = self.workspace.clone();
@@ -1345,15 +1366,30 @@ impl AppView {
                             "发布模板",
                         )
                         .await;
+                    let written = outcome.is_ok();
                     status.lock().await.push(template_notice(outcome));
+                    written
                 }
             });
-            if let Err(error) = task.await {
+            let written = task.await.unwrap_or_else(|error| {
                 warn!(%error, "a background task did not finish");
-            }
+                false
+            });
 
             Self::refresh_status(&status, &this, cx).await;
             Self::refresh_workspace(&workspace, &board, &this, cx).await;
+
+            // 建好了就离开表单：工作流列表和编辑器已经在刷新里换成这一条新的了。
+            if written
+                && close_form
+                && let Err(error) = this.update(cx, |this, cx| {
+                    this.creating_workflow = false;
+                    this.previewing_draft = false;
+                    cx.notify();
+                })
+            {
+                warn!(?error, "the view was gone before the update landed");
+            }
         })
         .detach();
     }
@@ -1629,10 +1665,10 @@ impl AppView {
                     .on_click(cx.listener(|this, _, _, cx| this.create_workflow(cx))),
             )
             .child(
-                // 从零拼一条多平台发布流水线太费事：这里可以直接改用现成的模板。
+                // 从零拼一条多平台发布流水线太费事：一键用现成的模板建成一条工作流。
                 Button::new("draft-use-template")
                     .label(labels::WORKFLOW_NEW_USE_TEMPLATE)
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_release_template(cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.create_workflow_from_template(cx))),
             );
 
         if let Some(problem) = problem {
@@ -2775,16 +2811,23 @@ mod tests {
             assert!(window.try_find("template-pane").is_none());
             assert!(window.try_find("workflow-editor-pane").is_some());
 
-            // 新建工作流的表单里也留着这条路：改用现成的发布模板。
+            // 新建工作流的表单里有"使用发布模板"：那一下是直接建一条并推送，不是
+            // 换一面给人看，所以表单还开着（真要写文件了）。
             window.click("new-workflow-on", cx);
             window.draw(cx).clear(cx);
-            assert!(window.try_find("draft-use-template").is_some());
-
-            window.click("draft-use-template", cx);
+            let use_template = window.find("draft-use-template");
+            assert_eq!(
+                use_template.label(),
+                Some(crate::labels::WORKFLOW_NEW_USE_TEMPLATE)
+            );
+            assert!(window.find("workflow-draft-pane").visible());
+            window.click("new-workflow-off", cx);
             window.draw(cx).clear(cx);
-            // 采用模板就是离开表单：模板占的就是编辑器那块地方，工作流列表照旧在左边。
+
+            // 表头的"发布模板"才是摆开来看的那一面：它占编辑器那块地方。
+            window.click("release-template-on", cx);
+            window.draw(cx).clear(cx);
             assert!(window.find("template-pane").visible());
-            assert!(window.try_find("workflow-draft-pane").is_none());
             assert!(window.try_find("workflow-title-1").is_some());
         })
         .unwrap();
