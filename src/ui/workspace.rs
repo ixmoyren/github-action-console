@@ -11,6 +11,9 @@ impl AppView {
         let tab = guard.tab();
         let workflows = guard.workflows().to_vec();
         let workflows_state = guard.workflows_state();
+        let selected_workflow = guard.selected_workflow_id();
+        let workflow_file = guard.workflow_file().map(str::to_owned);
+        let workflow_file_state = guard.workflow_file_state();
         let runs = guard.runs().to_vec();
         let runs_state = guard.runs_state();
         let runs_has_more = guard.runs_has_more();
@@ -23,6 +26,9 @@ impl AppView {
             this.workspace_tab = tab;
             this.workflows = workflows;
             this.workflows_state = workflows_state;
+            this.selected_workflow_id = selected_workflow;
+            this.workflow_file = workflow_file;
+            this.workflow_file_state = workflow_file_state;
             this.runs = runs;
             this.runs_state = runs_state;
             this.runs_has_more = runs_has_more;
@@ -225,28 +231,8 @@ impl AppView {
         .detach();
     }
     pub(super) fn workspace_shell(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut workflows_tab = Button::new("tab-workflows").label(labels::WORKSPACE_WORKFLOWS);
-        if self.workspace_tab == WorkspaceTab::Workflows {
-            workflows_tab = workflows_tab.primary();
-        }
-        let mut runs_tab = Button::new("tab-runs").label(labels::WORKSPACE_RUNS);
-        if self.workspace_tab == WorkspaceTab::Runs {
-            runs_tab = runs_tab.primary();
-        }
-
-        let tabs = div()
-            .flex()
-            .flex_row()
-            .gap_2()
-            .child(workflows_tab.on_click(cx.listener(|this, _, _, cx| {
-                this.set_workspace_tab(WorkspaceTab::Workflows, cx);
-            })))
-            .child(runs_tab.on_click(cx.listener(|this, _, _, cx| {
-                this.set_workspace_tab(WorkspaceTab::Runs, cx);
-            })));
-
         let content = match self.workspace_tab {
-            WorkspaceTab::Workflows => self.workflows_panel_ui(),
+            WorkspaceTab::Workflows => self.workflows_panel_ui(cx),
             WorkspaceTab::Runs => self.runs_panel_ui(cx),
         };
 
@@ -255,29 +241,419 @@ impl AppView {
             .flex_col()
             .gap_3()
             .p_3()
-            .child(tabs)
+            .size_full()
+            .child(self.workspace_header_ui(cx))
             .child(content)
             .into_any_element()
     }
-    pub(super) fn workflows_panel_ui(&self) -> AnyElement {
-        let mut panel = div().flex().flex_col().gap_2().children(
-            self.workflows
-                .iter()
-                .map(|workflow| pickable(workflow.name.clone())),
-        );
+    /// The page title, and the way across to the other view. Each view is a
+    /// page with a heading rather than one more row of buttons.
+    fn workspace_header_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (title, back) = match self.workspace_tab {
+            WorkspaceTab::Workflows => (labels::WORKSPACE_WORKFLOWS, None),
+            WorkspaceTab::Runs => (
+                labels::WORKSPACE_RUNS,
+                Some(
+                    Button::new("back-to-workflows")
+                        .label(labels::WORKSPACE_BACK_ARROW)
+                        .tooltip(labels::WORKSPACE_BACK_TO_WORKFLOWS)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_workspace_tab(WorkspaceTab::Workflows, cx);
+                        }))
+                        .into_any_element(),
+                ),
+            ),
+        };
+
+        let heading = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .children(back)
+            .child(Label::new(title).text_lg());
+
+        let mut header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .child(heading);
+
+        match self.workspace_tab {
+            WorkspaceTab::Workflows => {
+                let link_color = cx.theme().link;
+                header = header.child(
+                    div()
+                        .id("open-runs")
+                        .text_color(link_color)
+                        .cursor_pointer()
+                        .child(labels::WORKSPACE_RUN_HISTORY)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_workspace_tab(WorkspaceTab::Runs, cx);
+                        })),
+                );
+            }
+            WorkspaceTab::Runs => {}
+        }
+
+        header.into_any_element()
+    }
+    /// Show a workflow's file. Selecting is cheap; the file itself is fetched
+    /// in the background afterwards.
+    pub(super) fn select_workflow(&mut self, workflow_id: u64, cx: &mut Context<Self>) {
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let workspace = self.workspace.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let task = runtime.spawn({
+                let workspace = workspace.clone();
+                async move {
+                    workspace.lock().await.select_workflow(workflow_id);
+                }
+            });
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
+            Self::refresh_workspace(&workspace, &this, cx).await;
+
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                let workspace = workspace.clone();
+                async move {
+                    workspace
+                        .lock()
+                        .await
+                        .load_workflow_file(&*gateway, &token)
+                        .await;
+                }
+            });
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
+            Self::refresh_workspace(&workspace, &this, cx).await;
+        })
+        .detach();
+    }
+    /// Hand the loaded workflow file to the editor.
+    ///
+    /// The file arrives on a background task, and the editor only takes text
+    /// with a window in hand, so the handover happens between frames. The text
+    /// is deferred rather than written during render, and the editor is only
+    /// touched when the file actually changed.
+    pub(super) fn sync_yaml_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // No file (nothing selected, another repository loading, a failure)
+        // leaves the editor empty rather than showing the previous workflow.
+        let contents = self.workflow_file.clone().unwrap_or_default();
+        if self.yaml_editor_text.as_deref() == Some(contents.as_str()) {
+            return;
+        }
+        self.yaml_editor_text = Some(contents.clone());
+
+        let editor = self.yaml_editor.clone();
+        window.defer(cx, move |window, cx| {
+            editor.update(cx, |state, cx| {
+                if state.value().as_ref() != contents.as_str() {
+                    state.set_value(contents, window, cx);
+                }
+            });
+        });
+    }
+    /// Trigger the selected workflow on the default branch, then pull the runs
+    /// so the new run shows up without a manual refresh.
+    pub(super) fn run_selected_workflow(&mut self, cx: &mut Context<Self>) {
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let workspace = self.workspace.clone();
+        let status = self.status.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                let workspace = workspace.clone();
+                let status = status.clone();
+                let token = token.clone();
+                async move {
+                    let outcome = workspace
+                        .lock()
+                        .await
+                        .run_selected_workflow(&*gateway, &token)
+                        .await;
+                    let notice = match outcome {
+                        Ok(()) => Notice {
+                            kind: NoticeKind::Info,
+                            text: labels::WORKFLOW_RUN_TRIGGERED.to_owned(),
+                        },
+                        Err(RunProblem::NoWorkflow) => Notice {
+                            kind: NoticeKind::Warning,
+                            text: labels::WORKFLOW_RUN_NO_SELECTION.to_owned(),
+                        },
+                        Err(RunProblem::NoDefaultBranch) => Notice {
+                            kind: NoticeKind::Warning,
+                            text: labels::WORKFLOW_RUN_NO_BRANCH.to_owned(),
+                        },
+                        Err(RunProblem::Gateway(problem)) => notice_for(problem),
+                    };
+                    status.lock().await.push(notice);
+
+                    if outcome.is_ok() {
+                        workspace.lock().await.reload_runs(&*gateway, &token).await;
+                    }
+                }
+            });
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
+
+            Self::refresh_status(&status, &this, cx).await;
+            Self::refresh_workspace(&workspace, &this, cx).await;
+        })
+        .detach();
+    }
+    /// Commit what the editor holds, on the repository's default branch.
+    pub(super) fn save_workflow_file(&mut self, cx: &mut Context<Self>) {
+        let contents = self.yaml_editor.read(cx).value().to_string();
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let workspace = self.workspace.clone();
+        let status = self.status.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                let workspace = workspace.clone();
+                let status = status.clone();
+                let token = token.clone();
+                async move {
+                    let outcome = workspace
+                        .lock()
+                        .await
+                        .save_workflow_file(&*gateway, &token, &contents)
+                        .await;
+                    let notice = match outcome {
+                        Ok(()) => Notice {
+                            kind: NoticeKind::Info,
+                            text: labels::WORKFLOW_SAVED.to_owned(),
+                        },
+                        Err(SaveProblem::NoWorkflow) => Notice {
+                            kind: NoticeKind::Warning,
+                            text: labels::WORKFLOW_RUN_NO_SELECTION.to_owned(),
+                        },
+                        Err(SaveProblem::NoDefaultBranch) => Notice {
+                            kind: NoticeKind::Warning,
+                            text: labels::WORKFLOW_SAVE_NO_BRANCH.to_owned(),
+                        },
+                        Err(SaveProblem::Gateway(problem)) => notice_for(problem),
+                    };
+                    status.lock().await.push(notice);
+                }
+            });
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
+
+            Self::refresh_status(&status, &this, cx).await;
+            Self::refresh_workspace(&workspace, &this, cx).await;
+        })
+        .detach();
+    }
+    pub(super) fn workflows_panel_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_row()
+            .gap_4()
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .child(self.workflow_list_ui(cx))
+            .child(self.workflow_file_ui(cx))
+            .into_any_element()
+    }
+    /// The workflow the file viewer is showing.
+    fn selected_workflow(&self) -> Option<&Workflow> {
+        let id = self.selected_workflow_id?;
+        self.workflows.iter().find(|workflow| workflow.id == id)
+    }
+    /// The left column: one title per workflow, with the save and run buttons
+    /// under them.
+    fn workflow_list_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+        let selected_color = cx.theme().primary;
+        let selected_background = cx.theme().list_active;
+        let hover_color = cx.theme().muted;
+        let radius = cx.theme().radius;
+
+        let titles = self
+            .workflows
+            .iter()
+            .map(|workflow| {
+                let id = workflow.id;
+                let selected = self.selected_workflow_id == Some(id);
+                div()
+                    .id(SharedString::from(format!("workflow-title-{id}")))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .px_2()
+                    .py_1()
+                    .rounded(radius)
+                    .text_lg()
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(hover_color))
+                    .bg(if selected {
+                        selected_background
+                    } else {
+                        transparent_black()
+                    })
+                    .when(selected, move |row| {
+                        row.font_weight(FontWeight::SEMIBOLD)
+                            .text_color(selected_color)
+                    })
+                    .child(workflow.name.clone())
+                    .on_click(cx.listener(move |this, _, _, cx| this.select_workflow(id, cx)))
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scrollbar()
+            .children(titles);
 
         match self.workflows_state {
-            LoadState::Loading => panel = panel.child(pickable(labels::WORKFLOWS_LOADING)),
+            LoadState::Loading if self.workflows.is_empty() => {
+                list = list.child(pickable(labels::WORKFLOWS_LOADING));
+            }
             LoadState::Failed(problem) => {
-                panel = panel.child(Label::new(problem_text(problem)).text_sm())
+                list = list.child(Label::new(problem_text(problem)).text_sm());
             }
             LoadState::Loaded if self.workflows.is_empty() => {
-                panel = panel.child(pickable(labels::WORKFLOWS_EMPTY))
+                list = list.child(pickable(labels::WORKFLOWS_EMPTY));
             }
             _ => {}
         }
 
-        panel.into_any_element()
+        let run_button = Button::new("workflow-run")
+            .label(labels::WORKFLOW_RUN)
+            .disabled(self.selected_workflow_id.is_none())
+            .on_click(cx.listener(|this, _, _, cx| this.run_selected_workflow(cx)));
+
+        let save_button = Button::new("workflow-save")
+            .label(labels::WORKFLOW_SAVE)
+            .disabled(!self.workflow_is_edited(cx))
+            .on_click(cx.listener(|this, _, _, cx| this.save_workflow_file(cx)));
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .w(px(220.))
+            .h_full()
+            .min_h_0()
+            .child(list)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(save_button)
+                    .child(run_button),
+            )
+            .into_any_element()
+    }
+    /// Whether the editor holds text the repository does not have yet.
+    fn workflow_is_edited(&self, cx: &App) -> bool {
+        let Some(loaded) = self.workflow_file.as_deref() else {
+            return false;
+        };
+        self.yaml_editor.read(cx).value().as_ref() != loaded
+    }
+    /// The right column: the selected workflow's name, path, and its file in
+    /// the editor.
+    fn workflow_file_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(workflow) = self.selected_workflow() else {
+            // With no workflow to show, the column explains why it is empty
+            // instead of leaving the user to guess.
+            let placeholder = match self.workflows_state {
+                LoadState::Idle => pickable(labels::WORKFLOWS_PICK).into_any_element(),
+                LoadState::Loading => pickable(labels::WORKFLOWS_LOADING).into_any_element(),
+                LoadState::Failed(problem) => Label::new(problem_text(problem))
+                    .text_sm()
+                    .into_any_element(),
+                LoadState::Loaded => pickable(labels::WORKFLOWS_EMPTY).into_any_element(),
+            };
+            return div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(placeholder)
+                .into_any_element();
+        };
+
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_baseline()
+            .gap_2()
+            .child(Label::new(workflow.name.clone()).text_lg())
+            .child(
+                Label::new(workflow.path.clone())
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground),
+            );
+
+        let body = match (self.workflow_file_state, self.workflow_file.as_deref()) {
+            (_, Some("")) => pickable(labels::WORKFLOW_FILE_EMPTY).into_any_element(),
+            // Editable: the page's save button commits what the user changes.
+            (_, Some(_)) => div()
+                .id("workflow-editor-pane")
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                // The editor sizes to its text on its own, so the page has to
+                // say how tall it is.
+                .child(Editor::new(&self.yaml_editor).h(relative(1.)))
+                .test_support()
+                .into_any_element(),
+            (LoadState::Loading, None) => {
+                pickable(labels::WORKFLOW_FILE_LOADING).into_any_element()
+            }
+            (LoadState::Failed(problem), None) => Label::new(problem_text(problem))
+                .text_sm()
+                .into_any_element(),
+            _ => div().into_any_element(),
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(header)
+            .child(body)
+            .into_any_element()
     }
     pub(super) fn runs_panel_ui(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.open_run.is_some() {
@@ -428,5 +804,153 @@ impl AppView {
             .child(Input::new(&self.branch_input))
             .child(list)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    use gpui_kit::Entity;
+    use gpui_kit::component::input::EditorState;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AppContext as _, TestAppContext, WindowHandle, px, size};
+    use tokio::sync::Mutex;
+
+    use crate::app::{
+        AuthManager, AuthState, Downloads, LoadState, RepositoryList, RunDetail, Status, Workspace,
+    };
+    use crate::github::client::OctocrabGateway;
+    use crate::github::{Account, GitHubGateway, Workflow};
+    use crate::runtime::TokioRuntime;
+    use crate::store::Store;
+
+    use super::{AppView, Root, Services};
+
+    /// A signed-in view sitting on an open repository with one workflow, which
+    /// is the state the workflow page is designed for.
+    fn workspace_page(
+        cx: &mut TestAppContext,
+    ) -> (WindowHandle<Root>, Entity<AppView>, Entity<EditorState>) {
+        cx.update(gpui_kit::init);
+
+        let runtime = TokioRuntime::new().expect("a tokio runtime");
+        let store = runtime
+            .block_on(Store::in_memory())
+            .expect("an in-memory store");
+        let gateway: Arc<dyn GitHubGateway> = Arc::new(OctocrabGateway::new());
+        let services = Services {
+            manager: Arc::new(Mutex::new(AuthManager::new(gateway.clone(), store.clone()))),
+            picker: Arc::new(Mutex::new(RepositoryList::new(
+                gateway.clone(),
+                store.clone(),
+            ))),
+            workspace: Arc::new(Mutex::new(Workspace::new())),
+            detail: Arc::new(Mutex::new(RunDetail::new())),
+            downloads: Arc::new(Mutex::new(Downloads::new(std::env::temp_dir()))),
+            status: Arc::new(Mutex::new(Status::new())),
+            gateway,
+            store,
+            initial_proxy: None,
+            runtime,
+        };
+
+        let captured = Rc::new(RefCell::new(None));
+        let slot = captured.clone();
+        let handle = cx.open_window(size(px(1200.), px(800.)), move |window, cx| {
+            let view = cx.new(|cx| AppView::new(services, window, cx));
+            *slot.borrow_mut() = Some(view.clone());
+            view.update(cx, |view, cx| {
+                view.auth = AuthState::Authenticated {
+                    account: Account {
+                        login: "octocat".to_owned(),
+                    },
+                };
+                view.selected = Some("octo/alpha".to_owned());
+                view.workflows = vec![Workflow {
+                    id: 1,
+                    name: "ci".to_owned(),
+                    path: ".github/workflows/ci.yml".to_owned(),
+                }];
+                view.selected_workflow_id = Some(1);
+                view.workflows_state = LoadState::Loaded;
+                view.workflow_file = Some("name: ci\non: push\n".to_owned());
+                view.workflow_file_state = LoadState::Loaded;
+                cx.notify();
+            });
+            Root::new(view, window, cx)
+        });
+
+        let view = captured.borrow_mut().take().expect("the view");
+        let editor = view.read_with(cx, |view, _| view.yaml_editor.clone());
+        (handle, view, editor)
+    }
+
+    #[gpui_kit::test]
+    fn the_editor_fills_the_workflow_page(cx: &mut TestAppContext) {
+        let (handle, _view, editor) = workspace_page(cx);
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            // One frame hands the file to the editor, the next draws it.
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+
+            let editor = window.find(("input", editor.entity_id()));
+            assert!(editor.visible(), "the editor is not visible");
+            // The editor sizes to its text unless the page says otherwise, so
+            // a missing height shows up here as a couple of rows.
+            assert!(
+                editor.bounds().size.height >= px(560.),
+                "the editor itself is {} high in an 800px window",
+                editor.bounds().size.height
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_save_button_follows_the_editors_text(cx: &mut TestAppContext) {
+        let (handle, view, editor) = workspace_page(cx);
+        let handle = handle.into();
+
+        // The file reaches the editor through a deferred update, so the page
+        // needs more than one frame before it is showing the file.
+        for _ in 0..2 {
+            cx.update_window(handle, |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        }
+
+        cx.update_window(handle, |_, window, cx| {
+            assert_eq!(
+                editor.read(cx).value().as_ref(),
+                "name: ci\non: push\n",
+                "the editor never received the file"
+            );
+            // Nothing is changed yet, so there is nothing to save.
+            assert!(!view.read_with(cx, |view, cx| view.workflow_is_edited(cx)));
+
+            // An edit offers a save.
+            editor.update(cx, |state, cx| {
+                state.set_value("name: ci\non: [push]\n", window, cx);
+            });
+            window.draw(cx).clear(cx);
+            assert!(view.read_with(cx, |view, cx| view.workflow_is_edited(cx)));
+        })
+        .unwrap();
+
+        // A later frame keeps the edit instead of re-syncing the loaded file.
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            assert_eq!(
+                editor.read(cx).value().as_ref(),
+                "name: ci\non: [push]\n",
+                "a later frame overwrote the edit"
+            );
+        })
+        .unwrap();
     }
 }

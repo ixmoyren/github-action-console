@@ -132,6 +132,26 @@ pub struct Workflow {
     pub path: String,
 }
 
+/// A repository file as GitHub currently holds it. The SHA is the revision a
+/// later write has to name, so two writers cannot silently overwrite one
+/// another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileContents {
+    pub text: String,
+    pub sha: String,
+}
+
+/// A write to one repository file: the new text, the commit that carries it,
+/// and the revision the write starts from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileWrite {
+    pub path: String,
+    pub contents: String,
+    pub message: String,
+    pub reference: String,
+    pub sha: String,
+}
+
 /// GitHub's coarse run status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStatus {
@@ -341,6 +361,37 @@ pub trait GitHubGateway: Send + Sync {
         owner: &str,
         repository: &str,
     ) -> Result<Vec<Workflow>, GatewayError>;
+
+    /// One file in the repository, e.g. the YAML of a workflow. `path` is
+    /// repository-relative, like `.github/workflows/ci.yml`.
+    async fn file_contents(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        path: &str,
+    ) -> Result<FileContents, GatewayError>;
+
+    /// Replace a file's text on `reference`, as one commit. `sha` is the
+    /// revision the write starts from.
+    async fn update_file(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        write: FileWrite,
+    ) -> Result<(), GatewayError>;
+
+    /// Trigger a `workflow_dispatch` run of `workflow_id` on `reference`, a
+    /// branch or tag name.
+    async fn dispatch_workflow(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        workflow_id: u64,
+        reference: &str,
+    ) -> Result<(), GatewayError>;
 
     /// All runs in the repository, or the runs of one workflow when
     /// `workflow_id` is set.

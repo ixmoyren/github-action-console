@@ -93,6 +93,15 @@ impl RepositoryList {
         &self.repositories
     }
 
+    /// The default branch of a loaded repository, when GitHub reported one.
+    /// Callers use it as the ref a workflow dispatch runs on.
+    pub fn default_branch_of(&self, full_name: &str) -> Option<String> {
+        self.repositories
+            .iter()
+            .find(|repository| repository.full_name == full_name)
+            .and_then(|repository| repository.default_branch.clone())
+    }
+
     /// The loaded repositories matching the current query.
     pub fn visible(&self) -> Vec<Repository> {
         crate::github::filter_repositories(&self.repositories, &self.query)

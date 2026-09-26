@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Account, BuildArtifact, CommitSummary, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart,
-    GatewayError, GitHubGateway, Job, RateLimit, Repository, RepositoryPage, RepositorySort,
-    RunStatus, SecretToken, Step, Workflow, WorkflowRun, WorkflowRunPage,
+    FileContents, FileWrite, GatewayError, GitHubGateway, Job, RateLimit, Repository,
+    RepositoryPage, RepositorySort, RunStatus, SecretToken, Step, Workflow, WorkflowRun,
+    WorkflowRunPage,
 };
 
 const DEFAULT_BASE_URI: &str = "https://github.com";
@@ -181,6 +182,71 @@ impl GitHubGateway for OctocrabGateway {
                 path: workflow.path,
             })
             .collect())
+    }
+
+    async fn file_contents(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        path: &str,
+    ) -> Result<FileContents, GatewayError> {
+        let crab = user_client(token)?;
+        let mut items = crab
+            .repos(owner, repository)
+            .get_content()
+            .path(path)
+            .send()
+            .await
+            .map_err(map_error)?;
+
+        // GitHub answers with an array for a directory and a single object for
+        // a file; only the latter carries decodable content.
+        items
+            .take_items()
+            .into_iter()
+            .find(|content| content.r#type == "file")
+            .and_then(|content| {
+                content.decoded_content().map(|text| FileContents {
+                    text,
+                    sha: content.sha.clone(),
+                })
+            })
+            .ok_or_else(|| GatewayError::Unexpected(format!("{path} is not a file")))
+    }
+
+    async fn update_file(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        write: FileWrite,
+    ) -> Result<(), GatewayError> {
+        let crab = user_client(token)?;
+        crab.repos(owner, repository)
+            .update_file(write.path, write.message, write.contents, write.sha)
+            .branch(write.reference)
+            .send()
+            .await
+            .map_err(map_error)?;
+
+        Ok(())
+    }
+
+    async fn dispatch_workflow(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        workflow_id: u64,
+        reference: &str,
+    ) -> Result<(), GatewayError> {
+        let crab = user_client(token)?;
+        crab.actions()
+            .create_workflow_dispatch(owner, repository, workflow_id.to_string(), reference)
+            .send()
+            .await
+            .map_err(map_error)
     }
 
     async fn list_workflow_runs(

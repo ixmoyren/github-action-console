@@ -46,6 +46,9 @@ static PICKABLE_NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomic
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         reset_pickable_ids();
+        // The workflow file is read in the background, but the editor can only
+        // take text with a window in hand. This is where the two meet.
+        self.sync_yaml_editor(window, cx);
 
         // The window title carries the signed-in user; the app chrome no longer
         // repeats it anywhere on screen.

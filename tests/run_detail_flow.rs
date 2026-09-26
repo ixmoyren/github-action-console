@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use github_action_console::app::{AppProblem, LoadState, RunDetail};
 use github_action_console::github::{
-    Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, GatewayError, GitHubGateway, Job,
-    RepositoryPage, RepositorySort, RunStatus, SecretToken, Step, Workflow, WorkflowRun,
-    WorkflowRunPage, filter_log_lines,
+    Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, FileContents, FileWrite,
+    GatewayError, GitHubGateway, Job, RepositoryPage, RepositorySort, RunStatus, SecretToken, Step,
+    Workflow, WorkflowRun, WorkflowRunPage, filter_log_lines,
 };
 
 #[derive(Default)]
@@ -76,6 +76,37 @@ impl GitHubGateway for FakeGateway {
         _page: u32,
         _per_page: u32,
     ) -> Result<WorkflowRunPage, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn file_contents(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _path: &str,
+    ) -> Result<FileContents, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn update_file(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _write: FileWrite,
+    ) -> Result<(), GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn dispatch_workflow(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _workflow_id: u64,
+        _reference: &str,
+    ) -> Result<(), GatewayError> {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
 

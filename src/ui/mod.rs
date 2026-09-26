@@ -5,6 +5,7 @@
 //! - `session` — login and session restore (device flow, PAT, sign out).
 //! - `repositories` — the repository picker.
 //! - `workspace` — a repository's workflows, runs, filters, and polling.
+//! - `yaml_editor` — the workflow-file editor and its YAML highlighter.
 //! - `run_detail` — a run's jobs, steps, and logs.
 //! - `downloads` — run log archives and build artifacts.
 //! - `status` — the persistent status bar and transient notices.
@@ -20,26 +21,32 @@ mod settings;
 mod shell;
 mod status;
 mod workspace;
+mod yaml_editor;
 
 pub use launch::run;
 
 pub(super) use std::sync::Arc;
 pub(super) use std::time::Duration;
 
+pub(super) use gpui_kit::TestSupportExt as _;
 pub(super) use gpui_kit::assets::IconName;
 pub(super) use gpui_kit::base::input::{InputEvent, InputState};
 pub(super) use gpui_kit::component::button::{Button, ButtonVariants};
-pub(super) use gpui_kit::component::input::Input;
+pub(super) use gpui_kit::component::input::{Editor, EditorState, Input};
 pub(super) use gpui_kit::component::scroll::ScrollableElement as _;
 pub(super) use gpui_kit::component::table::{Column, TableState};
-pub(super) use gpui_kit::component::{Root, Theme, label::Label};
+pub(super) use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Root, Theme, label::Label,
+};
+pub(super) use gpui_kit::prelude::FluentBuilder as _;
 pub(super) use gpui_kit::*;
 pub(super) use tokio::sync::Mutex;
 pub(super) use tracing::{info, warn};
 
 pub(super) use crate::app::{
     AppProblem, AuthManager, AuthProblem, AuthState, DownloadState, Downloads, LoadState, Notice,
-    RepositoryList, RepositoryListState, RunDetail, Status, Workspace, WorkspaceTab,
+    NoticeKind, RepositoryList, RepositoryListState, RunDetail, RunProblem, SaveProblem, Status,
+    Workspace, WorkspaceTab, notice_for,
 };
 pub(super) use crate::app_info::AppInfo;
 pub(super) use crate::github::GitHubGateway;
@@ -112,6 +119,11 @@ struct AppView {
     selected: Option<String>,
     workflows: Vec<Workflow>,
     workflows_state: LoadState,
+    selected_workflow_id: Option<u64>,
+    workflow_file: Option<String>,
+    workflow_file_state: LoadState,
+    yaml_editor: Entity<EditorState>,
+    yaml_editor_text: Option<String>,
     runs: Vec<WorkflowRun>,
     runs_state: LoadState,
     runs_has_more: bool,
@@ -187,6 +199,7 @@ impl AppView {
             state.set_placeholder(labels::LOGS_SEARCH_PLACEHOLDER, window, cx);
             state
         });
+        let yaml_editor = cx.new(|cx| yaml_editor::yaml_editor_state(window, cx));
 
         let repo_view = cx.weak_entity();
         let repo_table = cx.new(move |cx| {
@@ -227,6 +240,11 @@ impl AppView {
             selected: None,
             workflows: Vec::new(),
             workflows_state: LoadState::Idle,
+            selected_workflow_id: None,
+            workflow_file: None,
+            workflow_file_state: LoadState::Idle,
+            yaml_editor,
+            yaml_editor_text: None,
             runs: Vec::new(),
             runs_state: LoadState::Idle,
             runs_has_more: false,

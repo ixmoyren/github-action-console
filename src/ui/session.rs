@@ -93,10 +93,12 @@ impl AppView {
         let remembered = { picker.lock().await.selected().map(str::to_owned) };
         if let Some(full_name) = remembered {
             let task = runtime.spawn({
+                let picker = picker.clone();
                 let workspace = workspace.clone();
                 let full_name = full_name.clone();
                 async move {
-                    workspace.lock().await.enter(&full_name);
+                    let default_branch = picker.lock().await.default_branch_of(&full_name);
+                    workspace.lock().await.enter(&full_name, default_branch);
                 }
             });
             if let Err(error) = task.await {

@@ -1,8 +1,8 @@
 use tracing::{debug, info, warn};
 
 use crate::github::{
-    GatewayError, GitHubGateway, RunFilter, RunStatusFilter, SecretToken, Workflow, WorkflowRun,
-    any_running, split_full_name,
+    FileWrite, GatewayError, GitHubGateway, RunFilter, RunStatusFilter, SecretToken, Workflow,
+    WorkflowRun, any_running, split_full_name,
 };
 
 use super::repositories::AppProblem;
@@ -30,13 +30,41 @@ impl LoadState {
     }
 }
 
+/// Why the console could not trigger the selected workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunProblem {
+    /// No workflow is selected, so there is nothing to run.
+    NoWorkflow,
+    /// The repository's default branch is unknown, so there is no ref to run on.
+    NoDefaultBranch,
+    /// GitHub refused the dispatch.
+    Gateway(AppProblem),
+}
+
+/// Why the console could not save the open workflow file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveProblem {
+    /// No workflow is selected, or its file was never read.
+    NoWorkflow,
+    /// The repository's default branch is unknown, so there is no branch to
+    /// commit to.
+    NoDefaultBranch,
+    /// GitHub refused the write.
+    Gateway(AppProblem),
+}
+
 /// One repository's workspace: its workflows, its runs, and the filters and
 /// polling decision that go with them.
 pub struct Workspace {
     repository: Option<String>,
+    default_branch: Option<String>,
     tab: WorkspaceTab,
     workflows: Vec<Workflow>,
     workflows_state: LoadState,
+    selected_workflow: Option<u64>,
+    workflow_file: Option<String>,
+    workflow_file_sha: Option<String>,
+    workflow_file_state: LoadState,
     runs: Vec<WorkflowRun>,
     runs_state: LoadState,
     runs_filter: RunFilter,
@@ -54,9 +82,14 @@ impl Workspace {
     pub fn new() -> Self {
         Self {
             repository: None,
+            default_branch: None,
             tab: WorkspaceTab::Workflows,
             workflows: Vec::new(),
             workflows_state: LoadState::Idle,
+            selected_workflow: None,
+            workflow_file: None,
+            workflow_file_sha: None,
+            workflow_file_state: LoadState::Idle,
             runs: Vec::new(),
             runs_state: LoadState::Idle,
             runs_filter: RunFilter::default(),
@@ -69,6 +102,10 @@ impl Workspace {
         self.repository.as_deref()
     }
 
+    pub fn default_branch(&self) -> Option<&str> {
+        self.default_branch.as_deref()
+    }
+
     pub fn tab(&self) -> WorkspaceTab {
         self.tab
     }
@@ -79,10 +116,15 @@ impl Workspace {
 
     /// Enter a repository. Changing repositories resets everything the
     /// previous one was showing.
-    pub fn enter(&mut self, full_name: &str) {
+    pub fn enter(&mut self, full_name: &str, default_branch: Option<String>) {
+        self.default_branch = default_branch;
         if self.repository.as_deref() != Some(full_name) {
             self.workflows.clear();
             self.workflows_state = LoadState::Idle;
+            self.selected_workflow = None;
+            self.workflow_file = None;
+            self.workflow_file_sha = None;
+            self.workflow_file_state = LoadState::Idle;
             self.runs.clear();
             self.runs_state = LoadState::Idle;
             self.runs_filter = RunFilter::default();
@@ -104,6 +146,52 @@ impl Workspace {
 
     pub fn workflows_state(&self) -> LoadState {
         self.workflows_state
+    }
+
+    /// The workflow the file viewer is showing, if any.
+    pub fn selected_workflow(&self) -> Option<&Workflow> {
+        let id = self.selected_workflow?;
+        self.workflows.iter().find(|workflow| workflow.id == id)
+    }
+
+    pub fn selected_workflow_id(&self) -> Option<u64> {
+        self.selected_workflow
+    }
+
+    /// The YAML of the selected workflow, once it has been read.
+    pub fn workflow_file(&self) -> Option<&str> {
+        self.workflow_file.as_deref()
+    }
+
+    pub fn workflow_file_state(&self) -> LoadState {
+        self.workflow_file_state
+    }
+
+    /// Show another workflow. Its file is fetched by [`Self::load_workflow_file`].
+    pub fn select_workflow(&mut self, workflow_id: u64) {
+        self.set_selected_workflow(Some(workflow_id));
+    }
+
+    fn set_selected_workflow(&mut self, workflow_id: Option<u64>) {
+        if self.selected_workflow == workflow_id {
+            return;
+        }
+        self.selected_workflow = workflow_id;
+        self.workflow_file = None;
+        self.workflow_file_sha = None;
+        self.workflow_file_state = LoadState::Idle;
+    }
+
+    /// Opening a repository should show something: the first workflow stands in
+    /// whenever nothing is selected or the selection is gone.
+    fn keep_or_default_selection(&mut self) {
+        let still_listed = self
+            .selected_workflow
+            .is_some_and(|id| self.workflows.iter().any(|workflow| workflow.id == id));
+        if !still_listed {
+            let first = self.workflows.first().map(|workflow| workflow.id);
+            self.set_selected_workflow(first);
+        }
     }
 
     pub fn runs(&self) -> &[WorkflowRun] {
@@ -166,12 +254,107 @@ impl Workspace {
                 info!(count = workflows.len(), "workflows loaded");
                 self.workflows = workflows;
                 self.workflows_state = LoadState::Loaded;
+                self.keep_or_default_selection();
             }
             Err(error) => {
                 warn!(%error, repository = %repository, "could not load workflows");
                 self.workflows_state = LoadState::failed(&error);
             }
         }
+
+        self.load_workflow_file(gateway, token).await;
+    }
+
+    /// Read the YAML of the selected workflow. Without a selection, or without
+    /// an open repository, there is nothing to read.
+    pub async fn load_workflow_file(&mut self, gateway: &dyn GitHubGateway, token: &SecretToken) {
+        let Some((owner, repository)) = self.parts() else {
+            return;
+        };
+        let Some(workflow) = self.selected_workflow().cloned() else {
+            return;
+        };
+
+        debug!(path = %workflow.path, "loading a workflow file");
+        self.workflow_file_state = LoadState::Loading;
+        match gateway
+            .file_contents(token, &owner, &repository, &workflow.path)
+            .await
+        {
+            Ok(contents) => {
+                self.workflow_file = Some(contents.text);
+                self.workflow_file_sha = Some(contents.sha);
+                self.workflow_file_state = LoadState::Loaded;
+            }
+            Err(error) => {
+                warn!(%error, path = %workflow.path, "could not load a workflow file");
+                self.workflow_file = None;
+                self.workflow_file_sha = None;
+                self.workflow_file_state = LoadState::failed(&error);
+            }
+        }
+    }
+
+    /// Commit `contents` as the new text of the selected workflow's file, on the
+    /// repository's default branch. The file is re-read afterwards so the
+    /// console and the repository agree on the new revision.
+    pub async fn save_workflow_file(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        contents: &str,
+    ) -> Result<(), SaveProblem> {
+        let Some((owner, repository)) = self.parts() else {
+            return Err(SaveProblem::NoWorkflow);
+        };
+        let Some(workflow) = self.selected_workflow().cloned() else {
+            return Err(SaveProblem::NoWorkflow);
+        };
+        let Some(sha) = self.workflow_file_sha.clone() else {
+            return Err(SaveProblem::NoWorkflow);
+        };
+        let Some(reference) = self.default_branch.clone() else {
+            return Err(SaveProblem::NoDefaultBranch);
+        };
+
+        info!(path = %workflow.path, %reference, "saving a workflow file");
+        let write = FileWrite {
+            message: format!("chore: 更新 {}", workflow.path),
+            path: workflow.path.clone(),
+            contents: contents.to_owned(),
+            reference,
+            sha,
+        };
+        gateway
+            .update_file(token, &owner, &repository, write)
+            .await
+            .map_err(|error| SaveProblem::Gateway(AppProblem::from_gateway(&error)))?;
+
+        self.load_workflow_file(gateway, token).await;
+        Ok(())
+    }
+
+    /// Trigger the selected workflow on the repository's default branch.
+    pub async fn run_selected_workflow(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+    ) -> Result<(), RunProblem> {
+        let Some((owner, repository)) = self.parts() else {
+            return Err(RunProblem::NoWorkflow);
+        };
+        let Some(workflow_id) = self.selected_workflow else {
+            return Err(RunProblem::NoWorkflow);
+        };
+        let Some(reference) = self.default_branch.clone() else {
+            return Err(RunProblem::NoDefaultBranch);
+        };
+
+        info!(workflow_id, %reference, "dispatching a workflow run");
+        gateway
+            .dispatch_workflow(token, &owner, &repository, workflow_id, &reference)
+            .await
+            .map_err(|error| RunProblem::Gateway(AppProblem::from_gateway(&error)))
     }
 
     pub async fn reload_runs(&mut self, gateway: &dyn GitHubGateway, token: &SecretToken) {

@@ -195,6 +195,11 @@ impl AppView {
         let picker = self.picker.clone();
         let workspace = self.workspace.clone();
         let runtime = self.runtime.clone();
+        let default_branch = self
+            .repos
+            .iter()
+            .find(|repository| repository.full_name == full_name)
+            .and_then(|repository| repository.default_branch.clone());
         cx.spawn(async move |this, cx| {
             let task = runtime.spawn({
                 let picker = picker.clone();
@@ -211,7 +216,7 @@ impl AppView {
                 let workspace = workspace.clone();
                 let full_name = full_name.clone();
                 async move {
-                    workspace.lock().await.enter(&full_name);
+                    workspace.lock().await.enter(&full_name, default_branch);
                 }
             });
             if let Err(error) = task.await {
@@ -251,6 +256,9 @@ impl AppView {
                 this.selected = None;
                 this.workflows.clear();
                 this.workflows_state = LoadState::Idle;
+                this.selected_workflow_id = None;
+                this.workflow_file = None;
+                this.workflow_file_state = LoadState::Idle;
                 this.runs.clear();
                 this.runs_state = LoadState::Idle;
                 this.runs_has_more = false;

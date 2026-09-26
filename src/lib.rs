@@ -6,3 +6,4 @@ pub mod labels;
 pub mod runtime;
 pub mod store;
 pub mod ui;
+pub mod yaml;

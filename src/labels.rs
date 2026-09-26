@@ -51,8 +51,10 @@ pub const REPOSITORIES_COLUMN_COMMIT_DATE: &str = "提交日期";
 
 pub const WORKSPACE_BACK: &str = "返回仓库列表";
 pub const WORKSPACE_BACK_ARROW: &str = "←";
+pub const WORKSPACE_BACK_TO_WORKFLOWS: &str = "返回工作流";
 pub const WORKSPACE_WORKFLOWS: &str = "工作流";
 pub const WORKSPACE_RUNS: &str = "运行";
+pub const WORKSPACE_RUN_HISTORY: &str = "运行记录 →";
 pub const WORKSPACE_COMING_SOON: &str = "即将推出。";
 
 pub const PROBLEM_RATE_LIMITED: &str = "已触发 GitHub 限流，请稍后重试。";
@@ -60,6 +62,16 @@ pub const PROBLEM_NOT_FOUND: &str = "该仓库不存在或无权访问。";
 
 pub const WORKFLOWS_LOADING: &str = "正在加载工作流…";
 pub const WORKFLOWS_EMPTY: &str = "该仓库没有工作流。";
+pub const WORKFLOWS_PICK: &str = "选择一个工作流查看它的定义。";
+pub const WORKFLOW_FILE_LOADING: &str = "正在加载工作流定义…";
+pub const WORKFLOW_FILE_EMPTY: &str = "该工作流没有内容。";
+pub const WORKFLOW_SAVE: &str = "保存";
+pub const WORKFLOW_SAVED: &str = "已保存并提交到默认分支。";
+pub const WORKFLOW_SAVE_NO_BRANCH: &str = "无法确定该仓库的默认分支，暂时不能保存。";
+pub const WORKFLOW_RUN: &str = "运行";
+pub const WORKFLOW_RUN_NO_SELECTION: &str = "请先选择一个工作流。";
+pub const WORKFLOW_RUN_NO_BRANCH: &str = "无法确定该仓库的默认分支，暂时不能触发运行。";
+pub const WORKFLOW_RUN_TRIGGERED: &str = "已触发工作流运行。";
 pub const RUNS_LOADING: &str = "正在加载运行…";
 pub const RUNS_EMPTY: &str = "没有匹配的运行。";
 pub const RUNS_LOAD_MORE: &str = "加载更多运行";
