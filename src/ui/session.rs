@@ -26,6 +26,15 @@ impl AppView {
                 }
             },
         ));
+        self.branch_subscription = Some(cx.subscribe(
+            &self.branch_input,
+            |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.refresh_run_table(cx);
+                    cx.notify();
+                }
+            },
+        ));
     }
     pub(super) async fn refresh_picker(
         picker: &Arc<Mutex<RepositoryList>>,

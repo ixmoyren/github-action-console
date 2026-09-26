@@ -16,6 +16,7 @@ mod downloads;
 mod launch;
 mod repositories;
 mod run_detail;
+mod runs;
 mod session;
 mod settings;
 mod shell;
@@ -54,8 +55,8 @@ pub(super) use crate::app_info::AppInfo;
 pub(super) use crate::github::GitHubGateway;
 pub(super) use crate::github::client::OctocrabGateway;
 pub(super) use crate::github::{
-    BuildArtifact, CommitSummary, Job, Repository, RunFilter, RunStatusFilter, Workflow,
-    WorkflowRun, filter_log_lines, filter_repositories, filter_runs,
+    BuildArtifact, CommitSummary, Job, Repository, RunFilter, Workflow, WorkflowRun,
+    filter_log_lines, filter_repositories, filter_runs,
 };
 pub(super) use crate::labels;
 pub(super) use crate::runtime::TokioRuntime;
@@ -156,8 +157,8 @@ struct AppView {
     runs: Vec<WorkflowRun>,
     runs_state: LoadState,
     runs_has_more: bool,
-    runs_status_filter: RunStatusFilter,
-    runs_workflow_filter: Option<u64>,
+    run_table: Entity<TableState<runs::RunTableDelegate>>,
+    branch_subscription: Option<Subscription>,
     workspace_tab: WorkspaceTab,
     polling: bool,
     detail: Arc<Mutex<RunDetail>>,
@@ -273,6 +274,13 @@ impl AppView {
         }];
         let preview_editor = cx.new(|cx| yaml_editor::yaml_editor_state(window, cx));
 
+        let run_view = cx.weak_entity();
+        let run_table = cx.new(|cx| {
+            TableState::new(runs::RunTableDelegate::new(run_view), window, cx)
+                .col_resizable(true)
+                .sortable(true)
+        });
+
         let repo_view = cx.weak_entity();
         let repo_table = cx.new(move |cx| {
             TableState::new(
@@ -340,8 +348,8 @@ impl AppView {
             runs: Vec::new(),
             runs_state: LoadState::Idle,
             runs_has_more: false,
-            runs_status_filter: RunStatusFilter::All,
-            runs_workflow_filter: None,
+            run_table,
+            branch_subscription: None,
             workspace_tab: WorkspaceTab::Workflows,
             polling: false,
             detail,

@@ -19,8 +19,6 @@ impl AppView {
         let runs_state = guard.runs_state();
         let runs_has_more = guard.runs_has_more();
         let selected = guard.repository().map(str::to_owned);
-        let status = guard.run_filter().status;
-        let workflow_filter = guard.run_filter().workflow_id;
         drop(guard);
 
         if let Err(error) = this.update(cx, |this, cx| {
@@ -35,8 +33,7 @@ impl AppView {
             this.runs_state = runs_state;
             this.runs_has_more = runs_has_more;
             this.selected = selected;
-            this.runs_status_filter = status;
-            this.runs_workflow_filter = workflow_filter;
+            this.refresh_run_table(cx);
             this.poll_runs_if_needed(cx);
             cx.notify();
         }) {
@@ -142,33 +139,6 @@ impl AppView {
                         .await
                         .load_more_runs(&*gateway, &token)
                         .await;
-                }
-            });
-            if let Err(error) = task.await {
-                warn!(%error, "a background task did not finish");
-            }
-            Self::refresh_workspace(&workspace, &this, cx).await;
-        })
-        .detach();
-    }
-    pub(super) fn set_workflow_filter(&mut self, workflow_id: Option<u64>, cx: &mut Context<Self>) {
-        self.runs_workflow_filter = workflow_id;
-        let gateway = self.gateway.clone();
-        let manager = self.manager.clone();
-        let workspace = self.workspace.clone();
-        let runtime = self.runtime.clone();
-        cx.spawn(async move |this, cx| {
-            let token = { manager.lock().await.token() };
-            let Some(token) = token else {
-                return;
-            };
-            let task = runtime.spawn({
-                let gateway = gateway.clone();
-                let workspace = workspace.clone();
-                async move {
-                    let mut guard = workspace.lock().await;
-                    guard.set_workflow_filter(workflow_id);
-                    guard.reload_runs(&*gateway, &token).await;
                 }
             });
             if let Err(error) = task.await {
@@ -1315,150 +1285,42 @@ impl AppView {
             return self.run_detail_ui(cx);
         }
 
-        let status_button = |id: &'static str, label: &'static str, active: bool| {
-            let mut button = Button::new(id).label(label);
-            if active {
-                button = button.primary();
-            }
-            button
-        };
+        let rows = self.run_rows(cx);
+        let mut panel = div().flex().flex_col().gap_3().flex_1().min_h_0().w_full();
 
-        let status_row = div()
-            .flex()
-            .flex_row()
-            .gap_2()
-            .child(
-                status_button(
-                    "runs-status-all",
-                    labels::RUNS_FILTER_ALL,
-                    self.runs_status_filter == RunStatusFilter::All,
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.runs_status_filter = RunStatusFilter::All;
-                    cx.notify();
-                })),
-            )
-            .child(
-                status_button(
-                    "runs-status-running",
-                    labels::RUNS_FILTER_RUNNING,
-                    self.runs_status_filter == RunStatusFilter::Running,
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.runs_status_filter = RunStatusFilter::Running;
-                    cx.notify();
-                })),
-            )
-            .child(
-                status_button(
-                    "runs-status-completed",
-                    labels::RUNS_FILTER_COMPLETED,
-                    self.runs_status_filter == RunStatusFilter::Completed,
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.runs_status_filter = RunStatusFilter::Completed;
-                    cx.notify();
-                })),
-            );
+        // The branch filter narrows the table's rows; the rest of the old
+        // filter row is gone, so sorting is what picks a column out now.
+        panel = panel.child(
+            div()
+                .max_w(px(320.))
+                .child(Input::new(&self.branch_input).id("runs-branch-filter")),
+        );
 
-        let mut workflow_buttons = vec![
-            status_button(
-                "workflow-all",
-                labels::RUNS_FILTER_WORKFLOW_ALL,
-                self.runs_workflow_filter.is_none(),
-            )
-            .on_click(cx.listener(|this, _, _, cx| this.set_workflow_filter(None, cx)))
-            .into_any_element(),
-        ];
-        for workflow in &self.workflows {
-            let id = workflow.id;
-            let mut button = Button::new(SharedString::from(format!("workflow-{id}")))
-                .label(workflow.name.clone());
-            if self.runs_workflow_filter == Some(id) {
-                button = button.primary();
-            }
-            workflow_buttons.push(
-                button
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.set_workflow_filter(Some(id), cx)),
-                    )
-                    .into_any_element(),
-            );
-        }
-        let workflow_row = div().flex().flex_row().gap_2().children(workflow_buttons);
-
-        let branch_text = self.branch_input.read(cx).value().to_string();
-        let branch_filter = if branch_text.trim().is_empty() {
-            None
+        if rows > 0 {
+            panel = panel.child(div().flex_1().min_h_0().child(self.run_table_ui()));
         } else {
-            Some(branch_text.trim().to_owned())
-        };
-        let filter = RunFilter {
-            status: self.runs_status_filter,
-            branch: branch_filter,
-            workflow_id: self.runs_workflow_filter,
-        };
-        let visible = filter_runs(&self.runs, &filter);
-
-        let rows = visible
-            .iter()
-            .map(|run| {
-                let run = run.clone();
-                Button::new(SharedString::from(format!("run-{}", run.id)))
-                    .label(format!(
-                        "{}｜{}｜{}｜{}｜{}｜{}｜{}",
-                        run.status.label(),
-                        run.name,
-                        run.conclusion
-                            .clone()
-                            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
-                        run.branch
-                            .clone()
-                            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
-                        run.event,
-                        run.actor
-                            .clone()
-                            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
-                        run.created_at
-                            .clone()
-                            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
-                    ))
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.open_run_detail(run.clone(), cx)),
-                    )
-            })
-            .collect::<Vec<_>>();
-
-        let mut list = div().flex().flex_col().gap_1().children(rows);
-        match self.runs_state {
-            LoadState::Loading if self.runs.is_empty() => {
-                list = list.child(pickable(labels::RUNS_LOADING));
+            let message = match self.runs_state {
+                LoadState::Loading => Some(labels::RUNS_LOADING),
+                LoadState::Failed(problem) => Some(problem_text(problem)),
+                LoadState::Loaded => Some(labels::RUNS_EMPTY),
+                LoadState::Idle => None,
+            };
+            if let Some(message) = message {
+                panel = panel.child(pickable(message));
             }
-            LoadState::Failed(problem) => {
-                list = list.child(Label::new(problem_text(problem)).text_sm());
-            }
-            LoadState::Loaded if visible.is_empty() => {
-                list = list.child(pickable(labels::RUNS_EMPTY));
-            }
-            _ => {}
         }
+
         if self.runs_has_more {
-            list = list.child(
-                Button::new("runs-load-more")
-                    .label(labels::RUNS_LOAD_MORE)
-                    .on_click(cx.listener(|this, _, _, cx| this.load_more_runs(cx))),
+            panel = panel.child(
+                div().flex().flex_row().justify_end().child(
+                    Button::new("runs-load-more")
+                        .label(labels::RUNS_LOAD_MORE)
+                        .on_click(cx.listener(|this, _, _, cx| this.load_more_runs(cx))),
+                ),
             );
         }
 
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(status_row)
-            .child(workflow_row)
-            .child(Input::new(&self.branch_input))
-            .child(list)
-            .into_any_element()
+        panel.into_any_element()
     }
 }
 
@@ -1514,11 +1376,28 @@ mod tests {
         AuthManager, AuthState, Downloads, LoadState, RepositoryList, RunDetail, Status, Workspace,
     };
     use crate::github::client::OctocrabGateway;
-    use crate::github::{Account, GitHubGateway, Workflow};
+    use crate::github::{Account, GitHubGateway, RunStatus, Workflow, WorkflowRun};
     use crate::runtime::TokioRuntime;
     use crate::store::Store;
 
-    use super::{AppView, Root, Services};
+    use super::{AppView, Root, Services, WorkspaceTab};
+
+    /// One run of the harness repository's workflow, with the fields the table
+    /// shows.
+    fn run(id: u64, workflow_id: u64, branch: &str, conclusion: &str) -> WorkflowRun {
+        WorkflowRun {
+            id,
+            workflow_id,
+            name: "ci".to_owned(),
+            status: RunStatus::Completed,
+            conclusion: Some(conclusion.to_owned()),
+            branch: Some(branch.to_owned()),
+            event: "push".to_owned(),
+            actor: Some("octocat".to_owned()),
+            created_at: Some("2026-09-22T10:00:00Z".to_owned()),
+            html_url: Some(format!("https://github.com/octo/alpha/actions/runs/{id}")),
+        }
+    }
 
     /// A signed-in view sitting on an open repository with one workflow, which
     /// is the state the workflow page is designed for.
@@ -1554,6 +1433,9 @@ mod tests {
             let view = cx.new(|cx| AppView::new(services, window, cx));
             *slot.borrow_mut() = Some(view.clone());
             view.update(cx, |view, cx| {
+                // The real app wires this up at launch; the runs table's branch
+                // filter needs it too.
+                view.wire(cx);
                 view.auth = AuthState::Authenticated {
                     account: Account {
                         login: "octocat".to_owned(),
@@ -1569,6 +1451,12 @@ mod tests {
                 view.workflows_state = LoadState::Loaded;
                 view.workflow_file = Some("name: ci\non: push\n".to_owned());
                 view.workflow_file_state = LoadState::Loaded;
+                view.runs = vec![
+                    run(1, 1, "main", "success"),
+                    run(2, 1, "release/1.0", "failure"),
+                ];
+                view.runs_state = LoadState::Loaded;
+                view.refresh_run_table(cx);
                 cx.notify();
             });
             Root::new(view, window, cx)
@@ -1730,6 +1618,40 @@ mod tests {
             window.click("new-workflow-off", cx);
             window.draw(cx).clear(cx);
             assert!(window.try_find("workflow-draft-pane").is_none());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_runs_table_follows_the_branch_filter(cx: &mut TestAppContext) {
+        let (handle, view, _editor) = workspace_page(cx);
+        let handle: gpui_kit::AnyWindowHandle = handle.into();
+
+        // The table lives on the runs tab.
+        cx.update_window(handle, |_, _, cx| {
+            view.update(cx, |view, cx| {
+                view.workspace_tab = WorkspaceTab::Runs;
+                cx.notify();
+            });
+        })
+        .unwrap();
+
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            assert_eq!(view.read_with(cx, |view, cx| view.run_rows(cx)), 2);
+
+            // Typing a branch into the filter leaves only that branch's runs.
+            window.click("runs-branch-filter", cx);
+            window.input("main", cx);
+        })
+        .unwrap();
+
+        // The input reports its change after the keystroke, so the filter lands
+        // on the next update.
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            assert_eq!(window.find("runs-branch-filter").value(), Some("main"));
+            assert_eq!(view.read_with(cx, |view, cx| view.run_rows(cx)), 1);
         })
         .unwrap();
     }

@@ -121,18 +121,34 @@ pub const WORKFLOW_RUN_TRIGGERED: &str = "已触发工作流运行。";
 pub const RUNS_LOADING: &str = "正在加载运行…";
 pub const RUNS_EMPTY: &str = "没有匹配的运行。";
 pub const RUNS_LOAD_MORE: &str = "加载更多运行";
-pub const RUNS_COLUMN_STATUS: &str = "状态";
-pub const RUNS_COLUMN_NAME: &str = "名称";
+pub const RUNS_COLUMN_STATUS: &str = "运行状态";
+pub const RUNS_COLUMN_WORKFLOW: &str = "工作流名称";
+pub const RUNS_COLUMN_CONCLUSION: &str = "运行结果";
 pub const RUNS_COLUMN_BRANCH: &str = "分支";
-pub const RUNS_COLUMN_EVENT: &str = "事件";
-pub const RUNS_COLUMN_ACTOR: &str = "触发者";
-pub const RUNS_COLUMN_CREATED: &str = "时间";
-pub const RUNS_FILTER_ALL: &str = "全部";
-pub const RUNS_FILTER_RUNNING: &str = "进行中";
-pub const RUNS_FILTER_COMPLETED: &str = "已完成";
-pub const RUNS_FILTER_WORKFLOW_ALL: &str = "全部工作流";
+pub const RUNS_COLUMN_EVENT: &str = "触发方式";
+pub const RUNS_COLUMN_CREATED: &str = "执行时间";
 pub const RUNS_BRANCH_PLACEHOLDER: &str = "按分支过滤";
 pub const VALUE_MISSING: &str = "—";
+
+/// The conclusion GitHub reports, in the console's language. Anything the
+/// console does not know is shown as GitHub spelled it.
+pub fn conclusion_label(conclusion: Option<&str>) -> String {
+    let Some(conclusion) = conclusion.filter(|value| !value.is_empty()) else {
+        return VALUE_MISSING.to_owned();
+    };
+
+    match conclusion {
+        "success" => "成功",
+        "failure" => "失败",
+        "cancelled" => "已取消",
+        "skipped" => "已跳过",
+        "timed_out" => "超时",
+        "action_required" => "需要操作",
+        "neutral" => "中性",
+        _ => conclusion,
+    }
+        .to_owned()
+}
 
 pub const RUN_DETAIL_BACK: &str = "返回运行列表";
 pub const RUN_DETAIL_OPEN_BROWSER: &str = "在浏览器打开";
@@ -176,3 +192,20 @@ pub const RESUME_TITLE: &str = "登录仍然有效";
 pub const RESUME_BODY: &str = "上次登录仍然有效，是否直接进入应用？";
 pub const RESUME_YES: &str = "是";
 pub const RESUME_NO: &str = "否";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conclusions_read_the_way_the_console_speaks() {
+        assert_eq!(conclusion_label(Some("success")), "成功");
+        assert_eq!(conclusion_label(Some("failure")), "失败");
+        assert_eq!(conclusion_label(Some("cancelled")), "已取消");
+        assert_eq!(conclusion_label(Some("timed_out")), "超时");
+        // GitHub's own spelling stands for anything the console does not know.
+        assert_eq!(conclusion_label(Some("stale")), "stale");
+        assert_eq!(conclusion_label(None), VALUE_MISSING);
+        assert_eq!(conclusion_label(Some("")), VALUE_MISSING);
+    }
+}

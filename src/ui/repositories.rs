@@ -262,7 +262,7 @@ impl AppView {
                 this.runs.clear();
                 this.runs_state = LoadState::Idle;
                 this.runs_has_more = false;
-                this.runs_workflow_filter = None;
+                this.refresh_run_table(cx);
                 this.workspace_tab = WorkspaceTab::Workflows;
                 cx.notify();
             }) {
