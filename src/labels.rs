@@ -39,6 +39,7 @@ pub const REPOSITORIES_SEARCH_PLACEHOLDER: &str = "按名称搜索仓库";
 pub const REPOSITORIES_SORT_UPDATED: &str = "按最近更新";
 pub const REPOSITORIES_SORT_PUSHED: &str = "按最近推送";
 pub const REPOSITORIES_LOAD_MORE: &str = "加载更多";
+pub const REPOSITORIES_REFRESH: &str = "刷新";
 pub const REPOSITORIES_LOADING: &str = "正在加载仓库…";
 pub const REPOSITORIES_EMPTY: &str = "没有匹配的仓库。";
 pub const REPOSITORIES_PRIVATE: &str = "私有";

@@ -302,6 +302,53 @@ async fn load_more_appends_the_next_page() {
     );
 }
 
+/// 刷新就是重新读第一页：翻过的那些页不要了，换上来的是最新的那一份。
+#[tokio::test]
+async fn refreshing_drops_the_pages_loaded_before_and_re_reads_the_first() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_page(Ok(page(
+        vec![
+            repository("octo/alpha", false),
+            repository("octo/beta", false),
+        ],
+        true,
+    )));
+    gateway.push_page(Ok(page(vec![repository("octo/gamma", false)], false)));
+    // 刷新拿到的这一页：alpha 消失了，说明列表确实换了新的一份。
+    gateway.push_page(Ok(page(
+        vec![
+            repository("octo/beta", false),
+            repository("octo/delta", true),
+        ],
+        false,
+    )));
+    let mut list = list_with(gateway.clone()).await;
+
+    list.reload(&token()).await;
+    list.load_more(&token()).await;
+    assert_eq!(list.repositories().len(), 3);
+
+    list.reload(&token()).await;
+
+    assert_eq!(
+        list.repositories()
+            .iter()
+            .map(|repository| repository.full_name.as_str())
+            .collect::<Vec<_>>(),
+        ["octo/beta", "octo/delta"]
+    );
+    assert!(!list.has_more());
+    assert_eq!(list.state(), RepositoryListState::Loaded);
+    assert_eq!(
+        gateway.requests(),
+        vec![
+            (RepositorySort::Updated, 1),
+            (RepositorySort::Updated, 2),
+            (RepositorySort::Updated, 1)
+        ]
+    );
+}
+
 #[tokio::test]
 async fn load_more_is_a_no_op_when_nothing_follows() {
     let gateway = Arc::new(FakeGateway::default());

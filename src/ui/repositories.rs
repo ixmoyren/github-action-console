@@ -305,6 +305,34 @@ impl AppView {
         })
         .detach();
     }
+    /// 重新拉一遍仓库列表：从第一页重来，翻过的那些页就不要了。
+    ///
+    /// 列表在别处（网页、另一个客户端、协作者）变动之后，这一下比重新登录快得多；
+    /// 排序与名字过滤都照旧，换的只是数据本身。
+    pub(super) fn refresh_repositories(&mut self, cx: &mut Context<Self>) {
+        let manager = self.manager.clone();
+        let picker = self.picker.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+
+            let task = runtime.spawn({
+                let picker = picker.clone();
+                async move {
+                    picker.lock().await.reload(&token).await;
+                }
+            });
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
+
+            Self::refresh_picker(&picker, &this, cx).await;
+        })
+        .detach();
+    }
     /// Recompute the table's rows from the loaded repositories and the current
     /// name filter. Called whenever either changes.
     pub(super) fn refresh_repo_table(&mut self, cx: &mut Context<Self>) {
@@ -349,17 +377,37 @@ impl AppView {
             );
         }
 
+        // 名字过滤框给固定宽度：它在一个按内容撑开的行里，用百分比宽度会把自己挤没。
         let search = div()
-            .w(relative(1. / 3.))
-            .child(Input::new(&self.search_input));
+            .w(px(280.))
+            .child(Input::new(&self.search_input).id("repo-search"));
 
+        // 列表在别处变过之后，按一下就拿最新的：重新读第一页，已经翻过的页丢掉。
+        // 图标按钮：刷新是有通用符号的动作，文字留给需要解释的动作。
+        let refresh = Button::new("refresh-repositories")
+            .icon(IconName::RefreshCw)
+            .tooltip(labels::REPOSITORIES_REFRESH)
+            .accessibility_label(labels::REPOSITORIES_REFRESH)
+            .disabled(self.repo_state == RepositoryListState::Loading)
+            .on_click(cx.listener(|this, _, _, cx| this.refresh_repositories(cx)));
+
+        // 刷新在这一行的最右边，右边不再放别的控件。
         let header = div()
             .flex()
             .flex_row()
             .items_center()
             .justify_between()
+            .gap_3()
             .child(pickable(labels::REPOSITORIES_TITLE))
-            .child(search);
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(search)
+                    .child(refresh),
+            );
 
         div()
             .flex()

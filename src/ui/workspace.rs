@@ -2325,10 +2325,11 @@ mod tests {
     use tokio::sync::Mutex;
 
     use crate::app::{
-        AuthManager, AuthState, Downloads, LoadState, RepositoryList, RunDetail, Status, Workspace,
+        AuthManager, AuthState, Downloads, LoadState, RepositoryList, RepositoryListState,
+        RunDetail, Status, Workspace,
     };
     use crate::github::client::OctocrabGateway;
-    use crate::github::{Account, GitHubGateway, RunStatus, Workflow, WorkflowRun};
+    use crate::github::{Account, GitHubGateway, Repository, RunStatus, Workflow, WorkflowRun};
     use crate::runtime::TokioRuntime;
     use crate::store::Store;
 
@@ -2719,6 +2720,47 @@ mod tests {
             window.draw(cx).clear(cx);
             assert!(window.try_find("board-manifest-editor").is_none());
             assert!(window.find("board-trigger").visible());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_repository_page_offers_a_refresh(cx: &mut TestAppContext) {
+        let (handle, view, _editor) = workspace_page(cx);
+        let handle: gpui_kit::AnyWindowHandle = handle.into();
+
+        view.update(cx, |view, cx| {
+            // 回到仓库列表那一页：手里没有选中的仓库。
+            view.selected = None;
+            view.repos = vec![Repository {
+                name: "alpha".to_owned(),
+                full_name: "octo/alpha".to_owned(),
+                is_private: false,
+                default_branch: Some("main".to_owned()),
+                latest_commit: None,
+            }];
+            view.repo_state = RepositoryListState::Loaded;
+            view.refresh_repo_table(cx);
+            cx.notify();
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            // 刷新是图标按钮，名字在可访问性标签和提示里。
+            let refresh = window.find("refresh-repositories");
+            assert_eq!(refresh.role(), Some(gpui_kit::Role::Button));
+            assert_eq!(refresh.label(), Some(crate::labels::REPOSITORIES_REFRESH));
+            assert!(window.try_find("repo-octo/alpha").is_some());
+
+            // 刷新在最右边，右边没有别的东西；搜索框有正常宽度，不会被挤成一个小方块。
+            let refresh_right = refresh.bounds().origin.x + refresh.bounds().size.width;
+            assert!(refresh_right >= px(1200.) - px(16.), "{refresh_right:?}");
+            let search = window.find("repo-search");
+            assert!(
+                search.bounds().size.width >= px(200.),
+                "{:?}",
+                search.bounds()
+            );
         })
         .unwrap();
     }
