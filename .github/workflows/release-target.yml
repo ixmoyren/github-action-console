@@ -1,3 +1,4 @@
+# 由 GitHub Action Console 为 ixmoyren/github-action-console 生成。
 # 多平台发布模板：Windows / macOS-Intel / macOS-Arm / Linux 一起构建，产物挂到 Release。
 #
 # 这份文件是**同一个模板的两面**：它既是本仓库自己的发布脚本，也是控制台里
