@@ -309,6 +309,20 @@ impl AppView {
                     labels::WORKFLOW_NEW
                 })
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_new_workflow(window, cx))),
+            )
+            .child(
+                // 发布模板：不用从空白表单拼，直接把仓库里那份构建脚本采用过去。
+                Button::new(if self.showing_template {
+                    "release-template-off"
+                } else {
+                    "release-template-on"
+                })
+                .label(if self.showing_template {
+                    labels::WORKSPACE_TEMPLATE_CLOSE
+                } else {
+                    labels::WORKSPACE_TEMPLATE
+                })
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_release_template(cx))),
             );
 
         div()
@@ -415,6 +429,8 @@ impl AppView {
     pub(super) fn select_workflow(&mut self, workflow_id: u64, cx: &mut Context<Self>) {
         // Browsing away from the form means leaving it.
         self.creating_workflow = false;
+        // 看工作流就是离开模板那一面。
+        self.showing_template = false;
         // Asking for a workflow's file means seeing the editor: the drawer gets
         // out of the way.
         if self.runs_drawer_visible() {
@@ -498,6 +514,20 @@ impl AppView {
                 &self.manifest_editor,
                 &mut self.manifest_editor_text,
                 manifest,
+                window,
+                cx,
+            );
+        }
+
+        // 发布模板：采用的那一份是给当前仓库的，所以文本里带着仓库名。
+        if self.showing_template {
+            let template = release_template::for_repository(
+                self.selected.as_deref().unwrap_or("未选中的仓库"),
+            );
+            push_editor_text(
+                &self.template_editor,
+                &mut self.template_editor_text,
+                template,
                 window,
                 cx,
             );
@@ -629,6 +659,8 @@ impl AppView {
 
         self.reset_draft(window, cx);
         self.creating_workflow = true;
+        // 表单和模板抢同一块地方，打开表单就把模板收起来。
+        self.showing_template = false;
         // The form lives where the drawer would be: give it the pane.
         if self.runs_drawer_visible() {
             self.close_drawer(cx);
@@ -964,10 +996,14 @@ impl AppView {
                     // The drawer slides over this pane and out of it, so the
                     // pane is what clips it.
                     .overflow_hidden()
-                    .child(match (self.creating_workflow, self.previewing_draft) {
-                        (true, true) => self.workflow_preview_ui(cx),
-                        (true, false) => self.workflow_draft_ui(cx),
-                        (false, _) => self.workflow_file_ui(cx),
+                    .child(if self.showing_template {
+                        self.release_template_ui(cx)
+                    } else {
+                        match (self.creating_workflow, self.previewing_draft) {
+                            (true, true) => self.workflow_preview_ui(cx),
+                            (true, false) => self.workflow_draft_ui(cx),
+                            (false, _) => self.workflow_file_ui(cx),
+                        }
                     })
                     .when(self.runs_drawer_visible(), |this| {
                         this.child(self.runs_drawer_ui(cx))
@@ -1211,6 +1247,117 @@ impl AppView {
             .child(body)
             .into_any_element()
     }
+    /// 发布模板：一份来自本仓库的多平台构建脚本，采用到当前仓库时先给人看、给人改。
+    fn release_template_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_baseline()
+            .gap_2()
+            .child(Label::new(labels::WORKFLOW_TEMPLATE_TITLE).text_lg())
+            .child(
+                Label::new(release_template::TEMPLATE_PATH)
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground),
+            );
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(header)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        Button::new("template-save")
+                            .label(labels::WORKFLOW_TEMPLATE_SAVE)
+                            .on_click(cx.listener(|this, _, _, cx| this.save_release_template(cx))),
+                    )
+                    .child(
+                        Label::new(labels::WORKFLOW_TEMPLATE_HINT)
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground),
+                    ),
+            )
+            .child(
+                div()
+                    .id("template-pane")
+                    .test_support()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    // 编辑器按自己的文字量排高度，高度得由这一层说了算。
+                    .child(Editor::new(&self.template_editor).h(relative(1.))),
+            )
+            .into_any_element()
+    }
+
+    /// 打开/收起发布模板。打开时把抽屉让开，模板占的就是编辑器那块地方。
+    pub(super) fn toggle_release_template(&mut self, cx: &mut Context<Self>) {
+        if self.showing_template {
+            self.showing_template = false;
+        } else {
+            self.creating_workflow = false;
+            self.previewing_draft = false;
+            self.showing_template = true;
+            if self.runs_drawer_visible() {
+                self.close_drawer(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// 把编辑器里的模板写进仓库：有就覆盖，没有就新建。
+    pub(super) fn save_release_template(&mut self, cx: &mut Context<Self>) {
+        let contents = self.template_editor.read(cx).value().to_string();
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let workspace = self.workspace.clone();
+        let board = self.board.clone();
+        let status = self.status.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                let workspace = workspace.clone();
+                let status = status.clone();
+                let token = token.clone();
+                async move {
+                    let outcome = workspace
+                        .lock()
+                        .await
+                        .push_workflow_file(
+                            &*gateway,
+                            &token,
+                            release_template::TEMPLATE_PATH,
+                            &contents,
+                            "发布模板",
+                        )
+                        .await;
+                    status.lock().await.push(template_notice(outcome));
+                }
+            });
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
+
+            Self::refresh_status(&status, &this, cx).await;
+            Self::refresh_workspace(&workspace, &board, &this, cx).await;
+        })
+        .detach();
+    }
+
     /// The new-workflow form: what the file is called, where its jobs run, and
     /// what they do. The file is only written when the form is complete.
     fn workflow_draft_ui(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1480,6 +1627,12 @@ impl AppView {
                     .primary()
                     .disabled(!ready)
                     .on_click(cx.listener(|this, _, _, cx| this.create_workflow(cx))),
+            )
+            .child(
+                // 从零拼一条多平台发布流水线太费事：这里可以直接改用现成的模板。
+                Button::new("draft-use-template")
+                    .label(labels::WORKFLOW_NEW_USE_TEMPLATE)
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_release_template(cx))),
             );
 
         if let Some(problem) = problem {
@@ -2049,6 +2202,34 @@ fn trigger_notice(outcome: Result<BuildDispatch, TriggerProblem>) -> Notice {
     }
 }
 
+/// 采用发布模板这件事的结果。
+fn template_notice(outcome: Result<(PushOutcome, String), CreateProblem>) -> Notice {
+    match outcome {
+        Ok((PushOutcome::Created, _)) => Notice {
+            kind: NoticeKind::Info,
+            text: labels::WORKFLOW_TEMPLATE_SAVED.to_owned(),
+        },
+        Ok((PushOutcome::Replaced, _)) => Notice {
+            kind: NoticeKind::Info,
+            text: labels::WORKFLOW_TEMPLATE_REPLACED.to_owned(),
+        },
+        Err(CreateProblem::NoRepository) => Notice {
+            kind: NoticeKind::Warning,
+            text: labels::WORKFLOW_NEW_NO_REPOSITORY.to_owned(),
+        },
+        Err(CreateProblem::NoDefaultBranch) => Notice {
+            kind: NoticeKind::Warning,
+            text: labels::WORKFLOW_NEW_NO_BRANCH.to_owned(),
+        },
+        // 模板不是表单填出来的，没有"草稿说不通"这一种；真出现也按生成失败处理。
+        Err(CreateProblem::Draft(problem)) => Notice {
+            kind: NoticeKind::Warning,
+            text: draft_problem_text(problem).to_owned(),
+        },
+        Err(CreateProblem::Gateway(problem)) => notice_for(problem),
+    }
+}
+
 /// 提交清单这件事的结果：新分支和 PR 号写在通知里，好让人能去仓库里接着看。
 fn manifest_write_notice(outcome: Result<ManifestWrite, ManifestWriteProblem>) -> Notice {
     match outcome {
@@ -2538,6 +2719,57 @@ mod tests {
             window.draw(cx).clear(cx);
             assert!(window.try_find("board-manifest-editor").is_none());
             assert!(window.find("board-trigger").visible());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_release_template_opens_in_place_of_the_editor(cx: &mut TestAppContext) {
+        let (handle, view, _editor) = workspace_page(cx);
+        let handle: gpui_kit::AnyWindowHandle = handle.into();
+
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(window.try_find("template-pane").is_none());
+            assert!(window.try_find("workflow-editor-pane").is_some());
+
+            // 新建工作流的表单里也留着这条路：改用现成的发布模板。
+            window.click("new-workflow-on", cx);
+            window.draw(cx).clear(cx);
+            assert!(window.try_find("draft-use-template").is_some());
+
+            window.click("draft-use-template", cx);
+            window.draw(cx).clear(cx);
+            // 采用模板就是离开表单：模板占的就是编辑器那块地方，工作流列表照旧在左边。
+            assert!(window.find("template-pane").visible());
+            assert!(window.try_find("workflow-draft-pane").is_none());
+            assert!(window.try_find("workflow-title-1").is_some());
+        })
+        .unwrap();
+
+        // 模板文本走延迟更新，要另一帧才到编辑器。
+        for _ in 0..2 {
+            cx.update_window(handle, |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        }
+
+        cx.update_window(handle, |_, window, cx| {
+            let text = view.read_with(cx, |view, cx| {
+                view.template_editor.read(cx).value().to_string()
+            });
+            // 采用的那一份是给当前仓库的：正文是构建脚本，抬头写清是给谁生成的。
+            assert!(text.contains("octo/alpha"), "模板没有写上仓库名：{text:?}");
+            assert!(
+                text.contains("gh release upload"),
+                "模板不是那份多平台发布脚本：{text:?}"
+            );
+
+            window.click("release-template-off", cx);
+            window.draw(cx).clear(cx);
+            assert!(window.try_find("template-pane").is_none());
+            assert!(window.try_find("workflow-editor-pane").is_some());
         })
         .unwrap();
     }

@@ -297,6 +297,14 @@ impl GitHubGateway for FakeGateway {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
 
+    async fn download_release_asset(
+        &self,
+        _token: &SecretToken,
+        _url: &str,
+    ) -> Result<Vec<u8>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
     fn set_proxy(&self, _proxy: Option<String>) {}
 
     async fn release_assets(
@@ -556,6 +564,69 @@ async fn pushing_a_workflow_that_already_exists_replaces_it() {
     // The replacement names the revision it starts from, so nothing is lost.
     assert_eq!(writes[0].sha.as_deref(), Some("sha-there"));
     assert!(writes[0].message.contains("更新"));
+}
+
+/// 采用发布模板：文本不由表单生成，直接写进仓库的那个固定路径。
+#[tokio::test]
+async fn adopting_the_release_template_writes_it_to_the_workflows_directory() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_file(Err(GatewayError::NotFound));
+    gateway.push_write(Ok(()));
+    gateway.push_workflows(Ok(vec![]));
+    let mut workspace = entered("octo/alpha");
+    let template = github_action_console::release_template::for_repository("octo/alpha");
+
+    let outcome = workspace
+        .push_workflow_file(
+            &*gateway,
+            &token(),
+            github_action_console::release_template::TEMPLATE_PATH,
+            &template,
+            "发布模板",
+        )
+        .await;
+
+    assert_eq!(
+        outcome.as_ref().map(|(outcome, _)| *outcome),
+        Ok(PushOutcome::Created)
+    );
+    let writes = gateway.writes();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, ".github/workflows/release-target.yml");
+    // 新文件没有起始版本，默认分支是写入的参考点。
+    assert_eq!(writes[0].sha, None);
+    assert_eq!(writes[0].reference, "main");
+    // 写的是模板正文本身，并且带着"这是给谁的"那一行。
+    assert!(writes[0].contents.contains("octo/alpha"));
+    assert!(writes[0].contents.contains("gh release upload"));
+    assert!(writes[0].message.contains("发布模板"));
+}
+
+#[tokio::test]
+async fn adopting_the_release_template_replaces_an_older_copy() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_file_text("name: Release target\n", "sha-there");
+    gateway.push_write(Ok(()));
+    gateway.push_workflows(Ok(vec![]));
+    let mut workspace = entered("octo/alpha");
+
+    let outcome = workspace
+        .push_workflow_file(
+            &*gateway,
+            &token(),
+            github_action_console::release_template::TEMPLATE_PATH,
+            "name: Release target\n",
+            "发布模板",
+        )
+        .await;
+
+    assert_eq!(
+        outcome.as_ref().map(|(outcome, _)| *outcome),
+        Ok(PushOutcome::Replaced)
+    );
+    let writes = gateway.writes();
+    // 覆盖要带上原来那一版的 revision。
+    assert_eq!(writes[0].sha.as_deref(), Some("sha-there"));
 }
 
 #[tokio::test]

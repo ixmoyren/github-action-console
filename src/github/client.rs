@@ -1,3 +1,4 @@
+use http_body_util::BodyExt as _;
 use octocrab::Octocrab;
 use octocrab::auth::DeviceCodes;
 use secrecy::SecretString;
@@ -514,6 +515,33 @@ impl GitHubGateway for OctocrabGateway {
                 created_at: Some(asset.created_at.to_rfc3339()),
             })
             .collect())
+    }
+
+    async fn download_release_asset(
+        &self,
+        token: &SecretToken,
+        url: &str,
+    ) -> Result<Vec<u8>, GatewayError> {
+        let crab = user_client(token)?;
+        // 发布资产的地址会 302 到对象存储；底层客户端自己跟随跳转，这里只要把
+        // 响应体收全即可。
+        let mut headers = http::header::HeaderMap::new();
+        headers.insert(
+            http::header::ACCEPT,
+            http::header::HeaderValue::from_static("application/octet-stream"),
+        );
+        let response = crab
+            ._get_with_headers(url, Some(headers))
+            .await
+            .map_err(map_error)?;
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(map_error)?
+            .to_bytes();
+
+        Ok(bytes.to_vec())
     }
 
     async fn rate_limit(&self, token: &SecretToken) -> Result<RateLimit, GatewayError> {

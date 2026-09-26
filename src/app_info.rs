@@ -39,6 +39,20 @@ impl AppInfo {
     pub fn packaging_config(&self) -> Option<&str> {
         self.packaging_config.as_deref()
     }
+
+    /// 这个二进制是谁：版本号、构建目标、打包配置。
+    ///
+    /// `--build-info` 与 CI 的自检都读这份文本，用来在没有窗口的地方确认"手里这个
+    /// 产物是哪个目标、哪份配置产出的"。三者缺一不可，所以打包配置缺失时写"未指定"
+    /// 而不是留空。
+    pub fn report(&self) -> String {
+        format!(
+            "GitHub Action Console\n版本号：{}\n构建目标：{}\n打包配置：{}\n",
+            self.version,
+            self.build_target,
+            self.packaging_config().unwrap_or("未指定")
+        )
+    }
 }
 
 pub fn normalize_packaging_config(raw: Option<&str>) -> Option<String> {
@@ -89,5 +103,17 @@ mod tests {
         let info = AppInfo::from_build();
         assert!(!info.version().is_empty());
         assert!(!info.build_target().is_empty());
+    }
+
+    #[test]
+    fn the_report_names_all_three_facts() {
+        let report = AppInfo::new("0.1.0", "aarch64-apple-darwin", Some("macos-dmg")).report();
+        assert!(report.contains("0.1.0"), "{report}");
+        assert!(report.contains("aarch64-apple-darwin"), "{report}");
+        assert!(report.contains("macos-dmg"), "{report}");
+
+        // 打包配置没传时也要照样报，写"未指定"而不是空着。
+        let bare = AppInfo::new("0.1.0", "x86_64-unknown-linux-gnu", None).report();
+        assert!(bare.contains("未指定"), "{bare}");
     }
 }

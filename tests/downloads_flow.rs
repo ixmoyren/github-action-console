@@ -13,7 +13,9 @@ use github_action_console::github::{
 struct FakeGateway {
     logs: Mutex<VecDeque<Result<Vec<u8>, GatewayError>>>,
     artifacts: Mutex<VecDeque<Result<Vec<u8>, GatewayError>>>,
+    assets: Mutex<VecDeque<Result<Vec<u8>, GatewayError>>>,
     downloads: Mutex<Vec<u64>>,
+    asset_urls: Mutex<Vec<String>>,
 }
 
 impl FakeGateway {
@@ -25,8 +27,16 @@ impl FakeGateway {
         self.artifacts.lock().unwrap().push_back(response);
     }
 
+    fn push_asset(&self, response: Result<Vec<u8>, GatewayError>) {
+        self.assets.lock().unwrap().push_back(response);
+    }
+
     fn downloads(&self) -> Vec<u64> {
         self.downloads.lock().unwrap().clone()
+    }
+
+    fn asset_urls(&self) -> Vec<String> {
+        self.asset_urls.lock().unwrap().clone()
     }
 }
 
@@ -202,6 +212,21 @@ impl GitHubGateway for FakeGateway {
             )))
     }
 
+    async fn download_release_asset(
+        &self,
+        _token: &SecretToken,
+        url: &str,
+    ) -> Result<Vec<u8>, GatewayError> {
+        self.asset_urls.lock().unwrap().push(url.to_owned());
+        self.assets
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Err(GatewayError::Unexpected(
+                "no scripted release asset".to_owned(),
+            )))
+    }
+
     fn set_proxy(&self, _proxy: Option<String>) {}
 
     async fn release_assets(
@@ -234,6 +259,18 @@ fn artifact(id: u64, name: &str, size_in_bytes: u64) -> BuildArtifact {
 
 fn token() -> SecretToken {
     SecretToken::new("ghp_test_token")
+}
+
+/// 一个发布资产：Release 上的包，带公开下载地址。
+fn release_asset(name: &str, size_in_bytes: u64) -> ReleaseAsset {
+    ReleaseAsset {
+        name: name.to_owned(),
+        size_in_bytes,
+        download_url: Some(format!(
+            "https://github.com/octo/alpha/releases/download/v0.1.0/{name}"
+        )),
+        created_at: Some("2026-09-26T10:00:00Z".to_owned()),
+    }
 }
 
 /// A unique scratch directory per test, so parallel tests never collide.
@@ -360,6 +397,79 @@ async fn a_failed_run_logs_download_is_surfaced() {
         *downloads.state(),
         DownloadState::Failed(AppProblem::NotFound)
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Release 上的包直接下到本地：控制台不必跳去网页。
+#[tokio::test]
+async fn a_release_asset_downloads_to_disk_under_its_release_name() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_asset(Ok(b"dmg-bytes".to_vec()));
+    let dir = scratch_dir("release-asset");
+    let mut downloads = Downloads::with_threshold(&dir, 1024);
+
+    let asset = release_asset("github-action-console-0.1.0-web-arm.dmg", 512);
+    assert!(!downloads.needs_confirmation_for(asset.size_in_bytes));
+    downloads
+        .download_release_asset(&*gateway, &token(), "octo/alpha", &asset)
+        .await;
+
+    let saved = match downloads.state() {
+        DownloadState::Saved(path) => path.clone(),
+        other => panic!("expected a saved file, got {other:?}"),
+    };
+    // 文件名就是 Release 上的名字：用户下载时要找的就是它。
+    assert_eq!(
+        saved.file_name().unwrap(),
+        "github-action-console-0.1.0-web-arm.dmg"
+    );
+    assert_eq!(std::fs::read(&saved).unwrap(), b"dmg-bytes");
+    assert_eq!(
+        gateway.asset_urls(),
+        vec![
+            "https://github.com/octo/alpha/releases/download/v0.1.0/github-action-console-0.1.0-web-arm.dmg"
+        ]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 大的包先问一句，问过之后才真的去取。
+#[tokio::test]
+async fn a_large_release_asset_waits_for_confirmation() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_asset(Ok(b"big-dmg".to_vec()));
+    let dir = scratch_dir("release-asset-large");
+    let mut downloads = Downloads::with_threshold(&dir, 1024);
+
+    let asset = release_asset("github-action-console-0.1.0-mas-unsigned.pkg", 4096);
+    assert!(downloads.needs_confirmation_for(asset.size_in_bytes));
+    downloads.queue_release_asset(&asset);
+
+    assert!(downloads.pending().is_some());
+    assert!(gateway.asset_urls().is_empty(), "还没确认就先去取了");
+
+    downloads.confirm(&*gateway, &token(), "octo/alpha").await;
+
+    assert!(matches!(downloads.state(), DownloadState::Saved(_)));
+    assert_eq!(gateway.asset_urls().len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 没有下载地址的发布资产当作失败，而不是静默什么都不做。
+#[tokio::test]
+async fn a_release_asset_without_a_url_fails_loudly() {
+    let gateway = Arc::new(FakeGateway::default());
+    let dir = scratch_dir("release-asset-no-url");
+    let mut downloads = Downloads::with_threshold(&dir, 1024);
+
+    let mut asset = release_asset("github-action-console-0.1.0-windows.msi", 128);
+    asset.download_url = None;
+    downloads
+        .download_release_asset(&*gateway, &token(), "octo/alpha", &asset)
+        .await;
+
+    assert!(matches!(downloads.state(), DownloadState::Failed(_)));
+    assert!(gateway.asset_urls().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

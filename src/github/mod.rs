@@ -506,6 +506,14 @@ pub trait GitHubGateway: Send + Sync {
         tag: &str,
     ) -> Result<Vec<ReleaseAsset>, GatewayError>;
 
+    /// 一个发布资产的文件内容。发布资产的下载地址在 GitHub 上是公开的，但私有仓库
+    /// 仍然要带凭据，所以这里始终用 token 去取。
+    async fn download_release_asset(
+        &self,
+        token: &SecretToken,
+        url: &str,
+    ) -> Result<Vec<u8>, GatewayError>;
+
     /// The core rate-limit budget for the current credentials.
     async fn rate_limit(&self, token: &SecretToken) -> Result<RateLimit, GatewayError>;
 

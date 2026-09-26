@@ -289,6 +289,14 @@ impl GitHubGateway for FakeGateway {
             )))
     }
 
+    async fn download_release_asset(
+        &self,
+        _token: &SecretToken,
+        _url: &str,
+    ) -> Result<Vec<u8>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
     fn set_proxy(&self, _proxy: Option<String>) {}
 
     async fn rate_limit(&self, _token: &SecretToken) -> Result<RateLimit, GatewayError> {
@@ -556,7 +564,7 @@ async fn publishing_needs_an_asset_for_that_target() {
     let gateway = Arc::new(FakeGateway::default());
     gateway.push_manifest(MANIFEST);
     // The release exists, but only carries the mas package.
-    gateway.push_assets(vec![asset("gac-demo-client-0.1.0-mas-unsigned.pkg")]);
+    gateway.push_assets(vec![asset("github-action-console-0.1.0-mas-unsigned.pkg")]);
     let mut board = board().await;
     board.load_manifest(&*gateway, &token()).await;
 
@@ -573,7 +581,7 @@ async fn publishing_needs_an_asset_for_that_target() {
 async fn publishing_writes_one_pointer_and_leaves_the_others_alone() {
     let gateway = Arc::new(FakeGateway::default());
     gateway.push_manifest(MANIFEST);
-    gateway.push_assets(vec![asset("gac-demo-client-0.1.0-web-arm.dmg")]);
+    gateway.push_assets(vec![asset("github-action-console-0.1.0-web-arm.dmg")]);
     let mut board = board().await;
     board.load_manifest(&*gateway, &token()).await;
 
@@ -583,7 +591,7 @@ async fn publishing_writes_one_pointer_and_leaves_the_others_alone() {
         .await
         .unwrap();
     assert_eq!(published.channel, "latest");
-    gateway.push_assets(vec![asset("gac-demo-client-0.1.0-web-arm.dmg")]);
+    gateway.push_assets(vec![asset("github-action-console-0.1.0-web-arm.dmg")]);
     board
         .publish(&*gateway, &token(), "web-arm", "lts", "v0.1.0")
         .await
@@ -610,7 +618,7 @@ async fn publishing_writes_one_pointer_and_leaves_the_others_alone() {
 async fn a_failed_build_on_one_target_does_not_touch_another_targets_release() {
     let gateway = Arc::new(FakeGateway::default());
     gateway.push_manifest(MANIFEST);
-    gateway.push_assets(vec![asset("gac-demo-client-0.1.0-web-arm.dmg")]);
+    gateway.push_assets(vec![asset("github-action-console-0.1.0-web-arm.dmg")]);
     gateway.push_dispatch(Ok(()));
     let mut board = board().await;
     board.load_manifest(&*gateway, &token()).await;
@@ -655,7 +663,7 @@ async fn pointers_survive_a_restart() {
     let store = Store::in_memory().await.unwrap();
     let gateway = Arc::new(FakeGateway::default());
     gateway.push_manifest(MANIFEST);
-    gateway.push_assets(vec![asset("gac-demo-client-0.1.0-web-arm.dmg")]);
+    gateway.push_assets(vec![asset("github-action-console-0.1.0-web-arm.dmg")]);
 
     let mut board = ReleaseBoard::new(store.clone());
     board.enter("octo/alpha");
@@ -684,8 +692,8 @@ async fn a_run_reports_its_three_facts_separately() {
     gateway.push_dispatch(Ok(()));
     // 构建产物已经有了：这个版本带着 web-arm 的资产。
     gateway.push_assets(vec![
-        asset("gac-demo-client-0.1.0-web-arm.dmg"),
-        asset("gac-demo-client-0.1.0-mas-unsigned.pkg"),
+        asset("github-action-console-0.1.0-web-arm.dmg"),
+        asset("github-action-console-0.1.0-mas-unsigned.pkg"),
     ]);
     let mut board = board().await;
     board.load_manifest(&*gateway, &token()).await;
@@ -712,7 +720,10 @@ async fn a_run_reports_its_three_facts_separately() {
     assert_eq!(facts.config, "macos-dmg");
     // 产物可获取：只有这个目标的资产，别的目标的包不算。
     assert_eq!(facts.assets.len(), 1);
-    assert_eq!(facts.assets[0].name, "gac-demo-client-0.1.0-web-arm.dmg");
+    assert_eq!(
+        facts.assets[0].name,
+        "github-action-console-0.1.0-web-arm.dmg"
+    );
     assert!(facts.assets[0].created_at.is_some());
     // 已登记发布：还没发布，所以没有指针。
     assert!(facts.pointers.is_empty());
@@ -726,7 +737,7 @@ async fn a_run_reports_its_three_facts_separately() {
     );
 
     // 发布之后，同一个 run 的第三条事实变成真的。
-    gateway.push_assets(vec![asset("gac-demo-client-0.1.0-web-arm.dmg")]);
+    gateway.push_assets(vec![asset("github-action-console-0.1.0-web-arm.dmg")]);
     board
         .publish(&*gateway, &token(), "web-arm", "latest", "v0.1.0")
         .await
@@ -813,8 +824,8 @@ async fn a_repository_without_a_manifest_gets_its_first_one_the_same_way() {
 #[test]
 fn an_asset_belongs_to_the_target_its_name_carries() {
     let assets = vec![
-        asset("gac-demo-client-0.1.0-web-arm.dmg"),
-        asset("gac-demo-client-0.1.0-mas-unsigned.pkg"),
+        asset("github-action-console-0.1.0-web-arm.dmg"),
+        asset("github-action-console-0.1.0-mas-unsigned.pkg"),
     ];
 
     assert!(version_covers_target(&assets, "web-arm"));

@@ -38,7 +38,8 @@ targets:
     packaging: linux-tar
 
 # 打包配置 = 要触发的 workflow + inputs 模板。target / version 由控制台在触发时补齐，
-# 所以模板里只放这个配置特有的部分（这里是产物形式）。
+# 所以模板里只放这个配置特有的部分（这里是产物形式）。注意：这里出现的每个键，目标
+# 仓库的那个 workflow 都必须在 workflow_dispatch 里声明过，否则 GitHub 会拒掉 dispatch。
 packaging:
   macos-dmg:
     workflow: release-target.yml

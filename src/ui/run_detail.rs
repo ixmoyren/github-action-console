@@ -387,6 +387,16 @@ impl AppView {
                     ))
                     .text_sm(),
                 );
+                // 发布资产逐条列出：名字、大小、时间，各给一个下载入口——控制台里
+                // 就能把 Release 上的包拿到本地，不必跳去网页。
+                let asset_rows = facts
+                    .assets
+                    .iter()
+                    .map(|asset| self.release_asset_row(asset, cx))
+                    .collect::<Vec<_>>();
+                if !asset_rows.is_empty() {
+                    panel = panel.child(div().flex().flex_col().gap_1().children(asset_rows));
+                }
                 panel = panel.child(
                     Label::new(format!(
                         "{}：{}",
@@ -464,6 +474,34 @@ impl AppView {
 
         panel.into_any_element()
     }
+
+    /// 一条发布资产：名字、大小、时间，加一个下载入口。
+    fn release_asset_row(&self, asset: &ReleaseAsset, cx: &mut Context<Self>) -> AnyElement {
+        let when = asset
+            .created_at
+            .as_deref()
+            .map(super::repositories::format_commit_date)
+            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned());
+        let asset = asset.clone();
+
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .child(pickable(format!(
+                "{}｜{} B（{}）",
+                asset.name, asset.size_in_bytes, when
+            )))
+            .child(
+                Button::new(SharedString::from(format!("release-asset-{}", asset.name)))
+                    .label(labels::ARTIFACT_DOWNLOAD)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.download_release_asset(asset.clone(), cx)
+                    })),
+            )
+            .into_any_element()
+    }
 }
 
 /// 构建完成这一条：这次运行自己的状态与结论。
@@ -490,14 +528,6 @@ fn facts_assets_text(facts: &ReleaseFacts, artifacts: &[BuildArtifact]) -> Strin
     );
     if expired > 0 {
         text.push_str(&format!("（{} 个 {}）", expired, labels::ARTIFACTS_EXPIRED));
-    }
-    for asset in &facts.assets {
-        let when = asset
-            .created_at
-            .as_deref()
-            .map(super::repositories::format_commit_date)
-            .unwrap_or_else(|| labels::VALUE_MISSING.to_owned());
-        text.push_str(&format!("\n· {}（{}）", asset.name, when));
     }
     text
 }

@@ -58,11 +58,12 @@ pub(super) use crate::github::GitHubGateway;
 pub(super) use crate::github::SecretToken;
 pub(super) use crate::github::client::OctocrabGateway;
 pub(super) use crate::github::{
-    BuildArtifact, CommitSummary, Job, Repository, RunFilter, Workflow, WorkflowRun,
+    BuildArtifact, CommitSummary, Job, ReleaseAsset, Repository, RunFilter, Workflow, WorkflowRun,
     filter_log_lines, filter_repositories, filter_runs,
 };
 pub(super) use crate::labels;
 pub(super) use crate::release::{CHANNELS, ChannelPointer};
+pub(super) use crate::release_template;
 pub(super) use crate::runtime::TokioRuntime;
 pub(super) use crate::store::Store;
 pub(super) use crate::workflow_draft::Triggers;
@@ -159,6 +160,10 @@ struct AppView {
     runner_labels: Vec<String>,
     yaml_editor: Entity<EditorState>,
     yaml_editor_text: Option<String>,
+    /// 发布模板：把仓库里那份构建脚本采用到别的仓库时，先在这里给人看和改。
+    showing_template: bool,
+    template_editor: Entity<EditorState>,
+    template_editor_text: Option<String>,
     creating_workflow: bool,
     previewing_draft: bool,
     draft_file_name: Entity<InputState>,
@@ -280,6 +285,7 @@ impl AppView {
             )
         });
         let yaml_editor = cx.new(|cx| yaml_editor::yaml_editor_state(window, cx));
+        let template_editor = cx.new(|cx| yaml_editor::yaml_editor_state(window, cx));
         let draft_file_name = cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_FILE_HINT));
         let draft_name = cx.new(|cx| draft_input(window, cx, labels::WORKFLOW_NEW_NAME_HINT));
         let draft_container =
@@ -378,6 +384,9 @@ impl AppView {
             runner_labels: Vec::new(),
             yaml_editor,
             yaml_editor_text: None,
+            showing_template: false,
+            template_editor,
+            template_editor_text: None,
             creating_workflow: false,
             previewing_draft: false,
             draft_file_name,

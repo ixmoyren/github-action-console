@@ -416,6 +416,21 @@ impl Workspace {
     ) -> Result<PushOutcome, CreateProblem> {
         let yaml = draft.to_yaml().map_err(CreateProblem::Draft)?;
         let path = draft.path().map_err(CreateProblem::Draft)?;
+        self.push_workflow_file(gateway, token, &path, &yaml, "由表单生成")
+            .await
+            .map(|(outcome, _)| outcome)
+    }
+
+    /// 把一段现成的 workflow 文本推到仓库的默认分支：有就覆盖，没有就新建，然后把它
+    /// 显示出来。发布模板走的就是这条路——文本不由表单生成，而是直接采用的那一份。
+    pub async fn push_workflow_file(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        path: &str,
+        contents: &str,
+        what: &str,
+    ) -> Result<(PushOutcome, String), CreateProblem> {
         let Some((owner, repository)) = self.parts() else {
             return Err(CreateProblem::NoRepository);
         };
@@ -426,7 +441,7 @@ impl Workspace {
         // The read decides both questions at once: whether the file is already
         // there, and which revision a replacement has to start from.
         let (outcome, sha) = match gateway
-            .file_contents(token, &owner, &repository, &path)
+            .file_contents(token, &owner, &repository, path)
             .await
         {
             Ok(existing) => (PushOutcome::Replaced, Some(existing.sha)),
@@ -439,11 +454,11 @@ impl Workspace {
         info!(%path, %reference, ?outcome, "pushing a workflow file");
         let write = FileWrite {
             message: match outcome {
-                PushOutcome::Created => format!("chore: 添加工作流 {path}"),
-                PushOutcome::Replaced => format!("chore: 更新工作流 {path}"),
+                PushOutcome::Created => format!("chore: 添加工作流 {path}（{what}）"),
+                PushOutcome::Replaced => format!("chore: 更新工作流 {path}（{what}）"),
             },
-            path: path.clone(),
-            contents: yaml,
+            path: path.to_owned(),
+            contents: contents.to_owned(),
             reference,
             sha,
         };
@@ -453,8 +468,8 @@ impl Workspace {
             .map_err(|error| CreateProblem::Gateway(AppProblem::from_gateway(&error)))?;
 
         self.load_workflows(gateway, token).await;
-        self.show_workflow_at(&path, gateway, token).await;
-        Ok(outcome)
+        self.show_workflow_at(path, gateway, token).await;
+        Ok((outcome, path.to_owned()))
     }
 
     /// Select the workflow a path belongs to, if the repository has one. A file

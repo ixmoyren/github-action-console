@@ -145,6 +145,56 @@ impl AppView {
         })
         .detach();
     }
+    /// 下载一个发布资产：大文件先确认，和构建产物走同一条路。
+    pub(super) fn download_release_asset(&mut self, asset: ReleaseAsset, cx: &mut Context<Self>) {
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let detail = self.detail.clone();
+        let downloads = self.downloads.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let repository = { detail.lock().await.repository().map(str::to_owned) };
+            let Some(repository) = repository else {
+                return;
+            };
+
+            let needs_confirmation = {
+                let mut guard = downloads.lock().await;
+                if guard.needs_confirmation_for(asset.size_in_bytes) {
+                    guard.queue_release_asset(&asset);
+                    true
+                } else {
+                    false
+                }
+            };
+            if needs_confirmation {
+                Self::refresh_downloads(&downloads, &this, cx).await;
+                return;
+            }
+
+            let token = { manager.lock().await.token() };
+            let Some(token) = token else {
+                return;
+            };
+            let task = runtime.spawn({
+                let gateway = gateway.clone();
+                let downloads = downloads.clone();
+                async move {
+                    downloads
+                        .lock()
+                        .await
+                        .download_release_asset(&*gateway, &token, &repository, &asset)
+                        .await;
+                }
+            });
+            if let Err(error) = task.await {
+                warn!(%error, "a background task did not finish");
+            }
+            Self::refresh_downloads(&downloads, &this, cx).await;
+        })
+        .detach();
+    }
+
     pub(super) fn confirm_download(&mut self, cx: &mut Context<Self>) {
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();

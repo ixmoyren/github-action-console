@@ -4,6 +4,7 @@ pub mod credentials;
 pub mod github;
 pub mod labels;
 pub mod release;
+pub mod release_template;
 pub mod runtime;
 pub mod store;
 pub mod ui;

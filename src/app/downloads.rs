@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use tracing::{debug, info, warn};
 
-use crate::github::{BuildArtifact, GitHubGateway, SecretToken, split_full_name};
+use crate::github::{BuildArtifact, GitHubGateway, ReleaseAsset, SecretToken, split_full_name};
 
 use super::repositories::AppProblem;
 
@@ -11,8 +11,16 @@ pub const DEFAULT_SIZE_THRESHOLD_BYTES: u64 = 50 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadKind {
-    RunLogs { run_id: u64 },
-    Artifact { artifact_id: u64 },
+    RunLogs {
+        run_id: u64,
+    },
+    Artifact {
+        artifact_id: u64,
+    },
+    /// 发布资产按下载地址取：它是 Release 上的文件，不是 Actions 的产物。
+    ReleaseAsset {
+        url: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +40,8 @@ pub enum DownloadState {
     Failed(AppProblem),
 }
 
-/// Downloads run log archives and build artifacts to a local directory.
+/// Downloads run log archives, build artifacts and release assets to a local
+/// directory.
 /// octocrab buffers whole payloads in memory, so anything large is confirmed
 /// first (ticket 07).
 pub struct Downloads {
@@ -70,9 +79,19 @@ impl Downloads {
         format!("run-{run_id}-logs.zip")
     }
 
+    /// 发布资产用它在 Release 上的名字当文件名——那正是用户下载时要找的名字。
+    pub fn file_name_for_release_asset(asset: &ReleaseAsset) -> String {
+        sanitize(&asset.name)
+    }
+
     /// Whether this artifact is big enough to need a confirmation.
     pub fn needs_confirmation(&self, artifact: &BuildArtifact) -> bool {
         artifact.size_in_bytes > self.threshold
+    }
+
+    /// Whether something this size is big enough to need a confirmation.
+    pub fn needs_confirmation_for(&self, size_in_bytes: u64) -> bool {
+        size_in_bytes > self.threshold
     }
 
     /// Park an artifact behind a confirmation prompt.
@@ -83,6 +102,18 @@ impl Downloads {
             kind: DownloadKind::Artifact {
                 artifact_id: artifact.id,
             },
+        });
+    }
+
+    /// Park a release asset behind a confirmation prompt.
+    pub fn queue_release_asset(&mut self, asset: &ReleaseAsset) {
+        let Some(url) = asset.download_url.clone() else {
+            return;
+        };
+        self.state = DownloadState::NeedsConfirmation(PendingDownload {
+            file_name: Self::file_name_for_release_asset(asset),
+            size_in_bytes: Some(asset.size_in_bytes),
+            kind: DownloadKind::ReleaseAsset { url },
         });
     }
 
@@ -123,6 +154,29 @@ impl Downloads {
             DownloadKind::Artifact {
                 artifact_id: artifact.id,
             },
+            file_name,
+        )
+        .await;
+    }
+
+    /// 下载一个发布资产：URL 缺失就没什么可下的，直接当作失败。
+    pub async fn download_release_asset(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        repository: &str,
+        asset: &ReleaseAsset,
+    ) {
+        let Some(url) = asset.download_url.clone() else {
+            self.state = DownloadState::Failed(AppProblem::Unexpected);
+            return;
+        };
+        let file_name = Self::file_name_for_release_asset(asset);
+        self.perform(
+            gateway,
+            token,
+            repository,
+            DownloadKind::ReleaseAsset { url },
             file_name,
         )
         .await;
@@ -176,6 +230,7 @@ impl Downloads {
                     .download_artifact(token, &owner, &repository_name, artifact_id)
                     .await
             }
+            DownloadKind::ReleaseAsset { url } => gateway.download_release_asset(token, &url).await,
         };
 
         match bytes {

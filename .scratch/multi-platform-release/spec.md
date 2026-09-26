@@ -16,7 +16,7 @@ Feature: multi-platform-release
 
 1. **发布清单**（仓库内 `.github/release-console.yml`）声明发布目标与打包配置（ADR-0003）；每个发布目标写明平台、架构、分发方式与所用打包配置。
 2. **通道指针**按 (发布目标 × 通道) 分开存放（ADR-0005）：web-arm 的 latest 可以是 v1.4.0，而 MAS 的 latest 还停在 v1.3.0。
-3. **示例客户端** + **CI 模板**（本仓库 `demo-client/` 与 `.github/workflows/release-target.yml`）打通真实链路：控制台选源码版本 / 发布目标 / 打包配置 → `workflow_dispatch` 触发 → runner 真实构建并记录日志 → 上传构建产物 → 在标签构建时把产物挂到该版本的 GitHub Release 上。
+3. **构建对象 = 本应用自身** + **CI 模板**（本仓库的 workspace 与 `.github/workflows/release-target.yml`）打通真实链路：控制台选源码版本 / 发布目标 / 打包配置 → `workflow_dispatch` 触发 → runner 真实构建并记录日志 → 上传构建产物 → 在标签构建时把产物挂到该版本的 GitHub Release 上。这份构建脚本 **本身就是模板**（ADR-0006）：控制台把它采用到别的仓库，Windows / macOS-Intel / macOS-Arm / Linux 一次配齐。
 4. **发布看板**以发布目标为行、通道为列，格里显示当前指针与这个版本在该目标上的发布状态； **触发表单**发起构建； **构建追踪**把"构建完成 / 产物可获取 / 已登记发布"三件事分开呈现。
 5. 缺少条件的步骤（签名、公证、App Store 提交，以及没有 runner 的平台）在清单、日志与界面上都 **标注为模拟**，绝不产出"已完成"的事实。
 
@@ -37,13 +37,15 @@ Feature: multi-platform-release
 13. 作为发布者，我想要把某个发布目标推进到某条通道（更新通道指针）是一个显式动作，这样发布会留下记录而不是隐式发生。
 14. 作为发布者，我想要某个目标构建失败时，其他目标与其他通道的已发布记录完全不受影响，这样一次失败不会制造假回滚。
 15. 作为发布者，我想要模拟步骤（签名、公证、商店提交）在日志与界面上被明确标注，这样我知道哪些格子是真的、哪些是演示。
-16. 作为发布者，我想要示例客户端能显示自己的版本号、发布目标与打包配置，这样我一眼就能确认手里这个包是哪来的。
+16. 作为发布者，我想要被构建的那个客户端能显示自己的版本号、发布目标与打包配置，这样我一眼就能确认手里这个包是哪来的。
 17. 作为发布者，我想要 MAS 的未签名包也能被真实构建出来，而签名与上架清楚标为模拟，这样我不因为没有证书就演示不了链路。
 18. 作为发布者，我想要在 web-arm / web-intel / Windows 上真正产出 dmg / msi，这样官网与 Windows 的分发是可信的。
 19. 作为发布者，我想要清单里的定义变更走分支 + PR，这样发布关系不会被某个人的本地状态改掉（ADR-0004）。
 20. 作为发布者，我想要看板与清单不一致时以清单为准，这样"定义"和"指针"不会有两个家（ADR-0003 与 ADR-0005）。
 21. 作为发布者，我想要一次完整的演示脚本（挑版本 → 构建 → 看日志与产物 → 推进通道 → 看指针变化），这样评审时我能讲清真实链路与模拟边界。
 22. 作为发布者，我想要故意制造一次失败来对照其他目标/通道的记录，这样"独立性"是被演示过的事实而不是声明。
+23. 作为发布者，我想要把一份现成的多平台构建脚本直接采用到我自己的仓库，这样我不必从空白表单拼出矩阵、打包与发布这几步。
+24. 作为发布者，我想要在控制台里把某个版本 Release 上的包下载下来，这样回到本地验证产物的路上不必再开浏览器。
 
 ## Implementation Decisions
 
@@ -65,16 +67,22 @@ Feature: multi-platform-release
 ### CI 模板（`.github/workflows/release-target.yml`）
 
 - 双触发：`workflow_dispatch`（inputs：`target`、`version`、`config`）与 `push: tags: ['v*']`。
-- `plan` 任务在 ubuntu 上读清单，产出目标矩阵与本次版本号（dispatch 用输入，tag push 用 tag 名）。
-- `build` 任务按目标矩阵展开，每个目标独立执行：`cargo build --release --target …` → 打包（dmg / msi / pkg / tar.gz）→ `upload-artifact`（构建产物，临时）→ 带 `::notice::`/`::warning::` 的模拟步骤标注。
-- `release` 任务只在 tag 触发时运行：确保该 tag 的 GitHub Release 存在，并把各目标的产物 `gh release upload` 挂上去（发布资产，有公开下载地址）。
+- 构建对象从 `Cargo.toml` 推出：`[[bin]]` 名优先，退回包名——模板不写死项目名（ADR-0006）。
+- `plan` 任务在 ubuntu 上读清单与 `Cargo.toml`，产出目标矩阵与本次版本号（dispatch 用输入，tag push 用 tag 名）。 **有清单时以清单为准**；没有清单时按内建的四个平台（macos-arm / macos-intel / windows / linux）各构建一次，任何 Cargo 仓库可直接采用。
+- `build` 任务按目标矩阵展开，每个目标独立执行：`cargo build --release --target …` → `--build-info` 无头自检 → 打包（dmg / msi（无 WiX 模板则退回 zip）/ 未签名 pkg / tar.gz）→ `upload-artifact`（构建产物，临时）→ 带 `::notice::`/`::warning::` 的模拟步骤标注。
+- `release` 任务在 tag 触发（或手动勾了 `publish`）时运行：确保该 tag 的 GitHub Release 存在，并把各目标的产物 `gh release upload` 挂上去（发布资产，有公开下载地址，不会过期）。
 - 单目标失败不影响其他目标的继续执行（`fail-fast: false`），也不触碰任何指针。
+
+### 模板的采用
+
+- 模板只有一份：仓库根的 `.github/workflows/release-target.yml`。控制台用 `include_str!` 编译进同一份文本（ADR-0006），采用时在抬头写上目标仓库名，正文一字不改。
+- 工作流页的「发布模板」把它摆在编辑器那块地方：可以直接改，`保存模板`写到目标仓库的 `.github/workflows/release-target.yml`（已有就覆盖，覆盖带上原 revision）。
 
 ### 控制台
 
 - **看板**：行 = 发布目标，列 = 通道，格子 = 当前指针 + 该目标在该版本上的发布状态；另有"最新构建"入口跳到运行详情。
 - **触发表单**：源码版本（tag / 分支）、发布目标、打包配置三选一或全选，提交即 `workflow_dispatch`；触发的 run 记下其输入，作为可追溯的一部分。
-- **构建追踪**：run → job / step → 日志 → 构建产物 → 该版本的发布资产；三件事分别标注时间与出处。
+- **构建追踪**：run → job / step → 日志 → 构建产物 → 该版本的发布资产；三件事分别标注时间与出处。发布资产逐条列名字、大小、时间，并各带一个下载入口——大文件先确认再落盘，文件名就是 Release 上的名字。
 - **发布到通道**：显式动作，把 (目标, 通道) 指针指向某个发布版本；只在该目标该版本的发布资产已存在时允许（或明确提示"仅登记，不搬运"）。
 - 模拟步骤在界面上有统一标记（例如 `模拟` 徽标），与真实步骤视觉上可区分。
 
@@ -88,11 +96,12 @@ Feature: multi-platform-release
 | MAS                   | 未签名 pkg 的真实构建、artifact                                    | 签名、公证、App Store Connect 上传与审核 |
 | linux-tar（演示自加） | tar.gz 打包、artifact、Release asset                               | 无官方分发渠道（仅演示产物形式）         |
 
-### 示例客户端与仓库布局
+### 构建对象与仓库布局
 
-- 示例客户端放在本仓库 `demo-client/`（独立 Cargo 包，不加入工作区）：只打印/显示版本号、构建目标、打包配置；`build.rs` 注入三者，与主程序同款手法。
-- 因为 GitHub 只读仓库根的 `.github/`，它的发布清单与 workflow 放在本仓库根：`.github/release-console.yml`、`.github/workflows/release-target.yml`。这也让演示可以"控制台指向本仓库"，无需第二个仓库。
-- 客户端不实现任何业务功能；打包模板放在 `demo-client/packaging/`。
+- **构建对象就是本仓库的应用本身**（`github-action-console` 这个 workspace 包）：它是一个 macOS / Windows / Linux 的桌面客户端，正好是这套发布目标要分发的那个东西，不必另造一个演示程序来当靶子（早先的 `demo-client/` 已删除）。
+- 它本来就报得出自己的三个事实：版本号取 `CARGO_PKG_VERSION`、构建目标取 `build.rs` 注入的 `TARGET`、打包配置取 `GAC_PACKAGING_CONFIG`，界面上由 `AppInfo` 显示；`github-action-console --build-info` 在无头环境里打印同样三项，CI 的打包自检就读它。
+- 发布清单与 workflow 放在本仓库根：`.github/release-console.yml`、`.github/workflows/release-target.yml`。这也让演示可以"控制台指向本仓库"，无需第二个仓库。
+- 打包模板放在 `packaging/`（Windows 的 `packaging/windows/main.wxs`）。
 
 ## Testing Decisions
 
@@ -115,22 +124,24 @@ Feature: multi-platform-release
 ### 交付材料
 
 1. 控制台（本仓库现有应用）+ 发布看板、触发表单、构建追踪、发布到通道。
-2. 示例客户端及其构建配置：`demo-client/`、`.github/release-console.yml`、`.github/workflows/release-target.yml`、`demo-client/packaging/windows/main.wxs`。
-3. 一次真实构建与一次通道发布记录更新的演示（录制或截图 + run 链接）。
+2. 被构建的客户端就是本应用自身，及其构建配置：`.github/release-console.yml`、`.github/workflows/release-target.yml`（同时是控制台采用的模板）、`packaging/windows/main.wxs`；`--build-info` 是它的无头自检。
+3. 一次真实构建与一次通道发布记录更新的演示（录制或截图 + run 链接），Release 上四个平台的包可在控制台里直接下载。
 4. 其他目标的配置表达（清单原文）与模拟范围（上表）。
 
 ### 演示脚本
 
 1. 控制台指向本仓库 → 看板显示四个发布目标 × 三条通道（指针初始为空）。
 2. 选版本 `v0.1.0`、目标 `web-arm`、配置 `macos-dmg` → 触发 → run 详情：状态、日志、构建产物。
-3. tag push（或让 `release` 任务跑一次）→ 该版本 Release 上出现 `web-arm` 的 dmg（发布资产）。
+3. tag push（或勾上 `publish` 手动跑一次）→ `plan` 按清单展开，四个平台各出一个包并挂到该版本 Release：macOS-Arm dmg、macOS-Intel dmg、Windows msi、Linux tar.gz（MAS 另有未签名 pkg）。
 4. "发布到 web-arm 的 latest" → 看板指针变为 v0.1.0；其他目标/通道格子不变。
-5. 故意让 `windows` 目标的打包步骤失败 → 它的格子停在"失败"，`web-arm` 的 latest 仍是 v0.1.0，MAS 的指针仍未设置。
-6. 展示 MAS：真实产出未签名 pkg，签名/公证/上架标为模拟。
+5. 在运行详情的「发布事实」里点发布资产的「下载」，包落到本地——控制台里就能拿到 Release 上的包。
+6. 故意让 `windows` 目标的打包步骤失败 → 它的格子停在"失败"，`web-arm` 的 latest 仍是 v0.1.0，MAS 的指针仍未设置。
+7. 展示 MAS：真实产出未签名 pkg，签名/公证/上架标为模拟。
 
 ### 与题目评审重点的对应
 
 - 发布模型清晰：`CONTEXT.md` 的术语 + 清单结构 + 本 spec 的模型一节。
-- 目标与通道独立： (目标 × 通道) 指针（ADR-0005）+ 演示脚本第 5 步。
+- 目标与通道独立： (目标 × 通道) 指针（ADR-0005）+ 演示脚本第 6 步。
 - 构建结果可追溯：run 的 inputs、源码 ref、打包配置名、日志、构建产物与发布资产各自留下出处。
-- 真实链路与模拟边界：workflow 的真实步骤 + `simulated` 标注 + 演示脚本第 6 步。
+- 真实链路与模拟边界：workflow 的真实步骤（四个平台）+ `simulated` 标注 + 演示脚本第 7 步。
+- 可复用：仓库里的构建脚本就是控制台采用的模板（ADR-0006），演示脚本第 3 步与「模板的采用」一节。

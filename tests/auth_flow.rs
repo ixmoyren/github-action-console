@@ -213,6 +213,14 @@ impl GitHubGateway for FakeGateway {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
 
+    async fn download_release_asset(
+        &self,
+        _token: &SecretToken,
+        _url: &str,
+    ) -> Result<Vec<u8>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
     fn set_proxy(&self, _proxy: Option<String>) {}
 
     async fn release_assets(
