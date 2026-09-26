@@ -368,6 +368,38 @@ impl GitHubGateway for OctocrabGateway {
         })
     }
 
+    async fn cancel_workflow_run(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        run_id: u64,
+    ) -> Result<(), GatewayError> {
+        let crab = user_client(token)?;
+        crab.actions()
+            .cancel_workflow_run(owner, repository, octocrab::models::RunId::from(run_id))
+            .await
+            .map_err(map_error)?;
+        Ok(())
+    }
+
+    async fn delete_workflow_run(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        run_id: u64,
+    ) -> Result<(), GatewayError> {
+        let crab = user_client(token)?;
+        // octocrab 没有封装删运行，按它自己删日志那一处的写法直接发一次 DELETE。
+        let uri = http::Uri::builder()
+            .path_and_query(format!("/repos/{owner}/{repository}/actions/runs/{run_id}"))
+            .build()
+            .map_err(|error| GatewayError::Unexpected(error.to_string()))?;
+        crab._delete(uri, None::<&()>).await.map_err(map_error)?;
+        Ok(())
+    }
+
     async fn list_jobs(
         &self,
         token: &SecretToken,

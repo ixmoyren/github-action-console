@@ -453,6 +453,25 @@ pub trait GitHubGateway: Send + Sync {
         per_page: u32,
     ) -> Result<WorkflowRunPage, GatewayError>;
 
+    /// 取消一次运行。GitHub 的取消只有运行这一级：还没跑完的 job 会跟着停。
+    async fn cancel_workflow_run(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        run_id: u64,
+    ) -> Result<(), GatewayError>;
+
+    /// 删掉一次运行：连同它的日志与构建产物。GitHub 没有"删单个 job"这回事，
+    /// 能删的就是运行本身。
+    async fn delete_workflow_run(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        run_id: u64,
+    ) -> Result<(), GatewayError>;
+
     async fn list_jobs(
         &self,
         token: &SecretToken,

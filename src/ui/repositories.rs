@@ -190,6 +190,10 @@ pub(super) fn format_commit_date(raw: &str) -> String {
 
 impl AppView {
     pub(super) fn choose_repository(&mut self, full_name: String, cx: &mut Context<Self>) {
+        // 双击仓库行不该进两次仓库（那是两遍读取）：上一次还没进完就先不算数。
+        if !self.begin_action(ActionKey::ChooseRepository) {
+            return;
+        }
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
         let picker = self.picker.clone();
@@ -225,15 +229,16 @@ impl AppView {
             }
 
             let token = { manager.lock().await.token() };
-            let Some(token) = token else {
-                return;
-            };
-            let handles = ScopedHandles {
-                picker: picker.clone(),
-                workspace: workspace.clone(),
-                board: board.clone(),
-            };
-            Self::load_workspace(&gateway, &token, &handles, &runtime, &this, cx).await;
+            if let Some(token) = token {
+                let handles = ScopedHandles {
+                    picker: picker.clone(),
+                    workspace: workspace.clone(),
+                    board: board.clone(),
+                };
+                Self::load_workspace(&gateway, &token, &handles, &runtime, &this, cx).await;
+            }
+
+            Self::release_action(&this, ActionKey::ChooseRepository, cx);
         })
         .detach();
     }
@@ -282,26 +287,29 @@ impl AppView {
         .detach();
     }
     pub(super) fn load_more(&mut self, cx: &mut Context<Self>) {
+        // 上一次那一页还没回来就不再要一页。
+        if !self.begin_action(ActionKey::LoadMoreRepositories) {
+            return;
+        }
         let manager = self.manager.clone();
         let picker = self.picker.clone();
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let token = { manager.lock().await.token() };
-            let Some(token) = token else {
-                return;
-            };
-
-            let task = runtime.spawn({
-                let picker = picker.clone();
-                async move {
-                    picker.lock().await.load_more(&token).await;
+            if let Some(token) = token {
+                let task = runtime.spawn({
+                    let picker = picker.clone();
+                    async move {
+                        picker.lock().await.load_more(&token).await;
+                    }
+                });
+                if let Err(error) = task.await {
+                    warn!(%error, "a background task did not finish");
                 }
-            });
-            if let Err(error) = task.await {
-                warn!(%error, "a background task did not finish");
+                Self::refresh_picker(&picker, &this, cx).await;
             }
 
-            Self::refresh_picker(&picker, &this, cx).await;
+            Self::release_action(&this, ActionKey::LoadMoreRepositories, cx);
         })
         .detach();
     }
@@ -310,26 +318,29 @@ impl AppView {
     /// 列表在别处（网页、另一个客户端、协作者）变动之后，这一下比重新登录快得多；
     /// 排序与名字过滤都照旧，换的只是数据本身。
     pub(super) fn refresh_repositories(&mut self, cx: &mut Context<Self>) {
+        // 上一次刷新还没回来就不再来一次。
+        if !self.begin_action(ActionKey::RefreshRepositories) {
+            return;
+        }
         let manager = self.manager.clone();
         let picker = self.picker.clone();
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let token = { manager.lock().await.token() };
-            let Some(token) = token else {
-                return;
-            };
-
-            let task = runtime.spawn({
-                let picker = picker.clone();
-                async move {
-                    picker.lock().await.reload(&token).await;
+            if let Some(token) = token {
+                let task = runtime.spawn({
+                    let picker = picker.clone();
+                    async move {
+                        picker.lock().await.reload(&token).await;
+                    }
+                });
+                if let Err(error) = task.await {
+                    warn!(%error, "a background task did not finish");
                 }
-            });
-            if let Err(error) = task.await {
-                warn!(%error, "a background task did not finish");
+                Self::refresh_picker(&picker, &this, cx).await;
             }
 
-            Self::refresh_picker(&picker, &this, cx).await;
+            Self::release_action(&this, ActionKey::RefreshRepositories, cx);
         })
         .detach();
     }
@@ -372,6 +383,7 @@ impl AppView {
                 div().flex().flex_row().justify_end().child(
                     Button::new("load-more")
                         .label(labels::REPOSITORIES_LOAD_MORE)
+                        .disabled(self.action_in_flight(ActionKey::LoadMoreRepositories))
                         .on_click(cx.listener(|this, _, _, cx| this.load_more(cx))),
                 ),
             );
@@ -388,7 +400,10 @@ impl AppView {
             .icon(IconName::RefreshCw)
             .tooltip(labels::REPOSITORIES_REFRESH)
             .accessibility_label(labels::REPOSITORIES_REFRESH)
-            .disabled(self.repo_state == RepositoryListState::Loading)
+            .disabled(
+                self.repo_state == RepositoryListState::Loading
+                    || self.action_in_flight(ActionKey::RefreshRepositories),
+            )
             .on_click(cx.listener(|this, _, _, cx| this.refresh_repositories(cx)));
 
         // 刷新在这一行的最右边，右边不再放别的控件。

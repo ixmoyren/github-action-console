@@ -16,5 +16,6 @@ pub use repositories::{AppProblem, RepositoryList, RepositoryListState};
 pub use run_detail::RunDetail;
 pub use status::{MAX_NOTICES, Notice, NoticeKind, Status, notice_for, notice_from_gateway};
 pub use workspace::{
-    CreateProblem, LoadState, PushOutcome, RunProblem, SaveProblem, Workspace, WorkspaceTab,
+    CreateProblem, LoadState, PushOutcome, RunActionProblem, RunProblem, SaveProblem, Workspace,
+    WorkspaceTab,
 };

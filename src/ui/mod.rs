@@ -9,9 +9,11 @@
 //! - `run_detail` — a run's jobs, steps, and logs.
 //! - `downloads` — run log archives and build artifacts.
 //! - `status` — the persistent status bar and transient notices.
+//! - `actions` — debounce and in-flight marks for anything that hits the network.
 //!
 //! Everything shares `AppView` and `Services` from this file.
 
+mod actions;
 mod downloads;
 mod launch;
 mod repositories;
@@ -27,8 +29,9 @@ mod yaml_editor;
 pub use launch::run;
 
 pub(super) use std::collections::HashMap;
+pub(super) use std::collections::HashSet;
 pub(super) use std::sync::Arc;
-pub(super) use std::time::Duration;
+pub(super) use std::time::{Duration, Instant};
 
 pub(super) use gpui_kit::TestSupportExt as _;
 pub(super) use gpui_kit::assets::IconName;
@@ -51,16 +54,16 @@ pub(super) use tracing::{info, warn};
 pub(super) use crate::app::{
     AppProblem, AuthManager, AuthProblem, AuthState, BoardSnapshot, CreateProblem, DownloadState,
     Downloads, LoadState, ManifestState, Notice, NoticeKind, PublishProblem, PushOutcome,
-    ReleaseBoard, ReleaseFacts, RepositoryList, RepositoryListState, RunDetail, RunProblem,
-    SaveProblem, Status, Workspace, WorkspaceTab, notice_for,
+    ReleaseBoard, ReleaseFacts, RepositoryList, RepositoryListState, RunActionProblem, RunDetail,
+    RunProblem, SaveProblem, Status, Workspace, WorkspaceTab, notice_for,
 };
 pub(super) use crate::app_info::AppInfo;
 pub(super) use crate::github::GitHubGateway;
 pub(super) use crate::github::SecretToken;
 pub(super) use crate::github::client::OctocrabGateway;
 pub(super) use crate::github::{
-    BuildArtifact, CommitSummary, Job, ReleaseAsset, Repository, RunFilter, Workflow, WorkflowRun,
-    filter_log_lines, filter_repositories, filter_runs,
+    BuildArtifact, CommitSummary, Job, ReleaseAsset, Repository, RunFilter, RunStatus, Workflow,
+    WorkflowRun, filter_log_lines, filter_repositories, filter_runs,
 };
 pub(super) use crate::labels;
 pub(super) use crate::release::{CHANNELS, ChannelPointer};
@@ -73,6 +76,7 @@ pub(super) use crate::workflow_draft::{
     runner_label, runner_versions,
 };
 
+pub(super) use actions::ActionKey;
 pub(crate) use shell::{notice_text, pickable, problem_text, reset_pickable_ids};
 
 const RUN_POLL_SECONDS: u64 = 10;
@@ -215,6 +219,10 @@ struct AppView {
     artifacts: Vec<BuildArtifact>,
     artifacts_state: LoadState,
     download_state: DownloadState,
+    /// 已经点下去、还在飞的动作：没回来之前同一个动作再点不算数。
+    in_flight: HashSet<actions::ActionKey>,
+    /// 每个动作上一次被接受的时间，用来挡掉双击的余波。
+    last_clicked: HashMap<actions::ActionKey, Instant>,
     status: Arc<Mutex<Status>>,
     status_account: Option<String>,
     status_remaining: Option<u64>,
@@ -434,6 +442,8 @@ impl AppView {
             artifacts: Vec::new(),
             artifacts_state: LoadState::Idle,
             download_state: DownloadState::Idle,
+            in_flight: HashSet::new(),
+            last_clicked: HashMap::new(),
             status,
             status_account: None,
             status_remaining: None,

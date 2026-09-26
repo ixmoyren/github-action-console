@@ -44,6 +44,22 @@ pub enum RunProblem {
     Gateway(AppProblem),
 }
 
+/// 取消或删除一次运行为什么没成。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunActionProblem {
+    /// 没有打开的仓库，所以不知道这条运行在哪。
+    NoRepository,
+    /// GitHub 拒绝了这一下（没权限、运行已经结束、限流……）。
+    Gateway(AppProblem),
+}
+
+/// 对一次运行做的两件事。取消与删除都落在运行上——GitHub 没有 job 级的这两个操作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunAction {
+    Cancel,
+    Delete,
+}
+
 /// Why the console could not save the open workflow file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaveProblem {
@@ -587,6 +603,60 @@ impl Workspace {
             )
             .await
             .map_err(|error| RunProblem::Gateway(AppProblem::from_gateway(&error)))
+    }
+
+    /// 取消一次还没跑完的运行：GitHub 的取消只有运行这一级，进行中的 job 跟着停。
+    /// 取消完把列表重新读一遍，让状态是刚问 GitHub 要来的那一个。
+    pub async fn cancel_run(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        run_id: u64,
+    ) -> Result<(), RunActionProblem> {
+        self.run_action(gateway, token, run_id, RunAction::Cancel)
+            .await
+    }
+
+    /// 删掉一次已经跑完的运行：连同它的日志与构建产物。GitHub 没有"删单个 job"，
+    /// 能删的就是运行本身。
+    pub async fn delete_run(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        run_id: u64,
+    ) -> Result<(), RunActionProblem> {
+        self.run_action(gateway, token, run_id, RunAction::Delete)
+            .await
+    }
+
+    async fn run_action(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        run_id: u64,
+        action: RunAction,
+    ) -> Result<(), RunActionProblem> {
+        let Some((owner, repository)) = self.parts() else {
+            return Err(RunActionProblem::NoRepository);
+        };
+
+        info!(run_id, ?action, "changing a run");
+        let outcome = match action {
+            RunAction::Cancel => {
+                gateway
+                    .cancel_workflow_run(token, &owner, &repository, run_id)
+                    .await
+            }
+            RunAction::Delete => {
+                gateway
+                    .delete_workflow_run(token, &owner, &repository, run_id)
+                    .await
+            }
+        };
+        outcome.map_err(|error| RunActionProblem::Gateway(AppProblem::from_gateway(&error)))?;
+
+        self.reload_runs(gateway, token).await;
+        Ok(())
     }
 
     pub async fn reload_runs(&mut self, gateway: &dyn GitHubGateway, token: &SecretToken) {

@@ -36,6 +36,13 @@ enum SaveTarget {
     ReleaseFlow,
 }
 
+/// 对运行记录做的那两件事。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunChange {
+    Cancel,
+    Delete,
+}
+
 impl AppView {
     pub(super) async fn refresh_workspace(
         workspace: &Arc<Mutex<Workspace>>,
@@ -207,7 +214,11 @@ impl AppView {
         })
         .detach();
     }
-    pub(super) fn load_more_runs(&mut self, cx: &mut Context<Self>) {
+    /// 重新问一遍运行记录：状态是会变的，列表上的那一列不该停在旧值上。
+    pub(super) fn refresh_runs(&mut self, cx: &mut Context<Self>) {
+        if !self.begin_action(ActionKey::RefreshRuns) {
+            return;
+        }
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
         let workspace = self.workspace.clone();
@@ -215,24 +226,138 @@ impl AppView {
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let token = { manager.lock().await.token() };
-            let Some(token) = token else {
-                return;
-            };
-            let task = runtime.spawn({
-                let gateway = gateway.clone();
-                let workspace = workspace.clone();
-                async move {
-                    workspace
-                        .lock()
-                        .await
-                        .load_more_runs(&*gateway, &token)
-                        .await;
+            if let Some(token) = token {
+                let task = runtime.spawn({
+                    let gateway = gateway.clone();
+                    let workspace = workspace.clone();
+                    async move {
+                        workspace.lock().await.reload_runs(&*gateway, &token).await;
+                    }
+                });
+                if let Err(error) = task.await {
+                    warn!(%error, "a background task did not finish");
                 }
-            });
-            if let Err(error) = task.await {
-                warn!(%error, "a background task did not finish");
+                Self::refresh_workspace(&workspace, &board, &this, cx).await;
             }
-            Self::refresh_workspace(&workspace, &board, &this, cx).await;
+
+            Self::release_action(&this, ActionKey::RefreshRuns, cx);
+        })
+        .detach();
+    }
+
+    /// 取消一次还没跑完的运行。
+    pub(super) fn cancel_run(&mut self, run_id: u64, cx: &mut Context<Self>) {
+        if !self.begin_action(ActionKey::CancelRun) {
+            return;
+        }
+        self.change_run(run_id, RunChange::Cancel, cx);
+    }
+
+    /// 删掉一次已经跑完的运行（连同它的日志与产物）。
+    pub(super) fn delete_run(&mut self, run_id: u64, cx: &mut Context<Self>) {
+        if !self.begin_action(ActionKey::DeleteRun) {
+            return;
+        }
+        self.change_run(run_id, RunChange::Delete, cx);
+    }
+
+    /// 取消与删除走同一条路：交给工作区去说，回来说一句结果，然后把列表重新读一遍。
+    fn change_run(&mut self, run_id: u64, change: RunChange, cx: &mut Context<Self>) {
+        let action = match change {
+            RunChange::Cancel => ActionKey::CancelRun,
+            RunChange::Delete => ActionKey::DeleteRun,
+        };
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let workspace = self.workspace.clone();
+        let board = self.board.clone();
+        let status = self.status.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let token = { manager.lock().await.token() };
+            if let Some(token) = token {
+                let task = runtime.spawn({
+                    let gateway = gateway.clone();
+                    let workspace = workspace.clone();
+                    let status = status.clone();
+                    let token = token.clone();
+                    async move {
+                        let outcome = match change {
+                            RunChange::Cancel => {
+                                workspace
+                                    .lock()
+                                    .await
+                                    .cancel_run(&*gateway, &token, run_id)
+                                    .await
+                            }
+                            RunChange::Delete => {
+                                workspace
+                                    .lock()
+                                    .await
+                                    .delete_run(&*gateway, &token, run_id)
+                                    .await
+                            }
+                        };
+                        status.lock().await.push(run_change_notice(change, outcome));
+                    }
+                });
+                if let Err(error) = task.await {
+                    warn!(%error, "a background task did not finish");
+                }
+
+                Self::refresh_status(&status, &this, cx).await;
+                Self::refresh_workspace(&workspace, &board, &this, cx).await;
+            }
+
+            // 删掉的那条如果正开着，详情就没得看了，关掉它。
+            if change == RunChange::Delete
+                && let Err(error) = this.update(cx, |this, cx| {
+                    if this.open_run == Some(run_id) {
+                        this.open_run = None;
+                        this.run_html_url = None;
+                        cx.notify();
+                    }
+                })
+            {
+                warn!(?error, "the view was gone before the update landed");
+            }
+
+            Self::release_action(&this, action, cx);
+        })
+        .detach();
+    }
+
+    pub(super) fn load_more_runs(&mut self, cx: &mut Context<Self>) {
+        // 上一次那一页还没回来就不再要一页。
+        if !self.begin_action(ActionKey::LoadMoreRuns) {
+            return;
+        }
+        let gateway = self.gateway.clone();
+        let manager = self.manager.clone();
+        let workspace = self.workspace.clone();
+        let board = self.board.clone();
+        let runtime = self.runtime.clone();
+        cx.spawn(async move |this, cx| {
+            let token = { manager.lock().await.token() };
+            if let Some(token) = token {
+                let task = runtime.spawn({
+                    let gateway = gateway.clone();
+                    let workspace = workspace.clone();
+                    async move {
+                        workspace
+                            .lock()
+                            .await
+                            .load_more_runs(&*gateway, &token)
+                            .await;
+                    }
+                });
+                if let Err(error) = task.await {
+                    warn!(%error, "a background task did not finish");
+                }
+                Self::refresh_workspace(&workspace, &board, &this, cx).await;
+            }
+
+            Self::release_action(&this, ActionKey::LoadMoreRuns, cx);
         })
         .detach();
     }
@@ -625,6 +750,10 @@ impl AppView {
     /// 跑列表里的某一条工作流：在默认分支上 dispatch，然后把运行记录拉一遍，
     /// 好让这次跑出来的记录自己冒出来。
     pub(super) fn run_workflow(&mut self, workflow_id: u64, cx: &mut Context<Self>) {
+        // 上一次运行还没回来就不再 dispatch：双击不该跑两遍。
+        if !self.begin_action(ActionKey::Run) {
+            return;
+        }
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
         let workspace = self.workspace.clone();
@@ -633,54 +762,58 @@ impl AppView {
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let token = { manager.lock().await.token() };
-            let Some(token) = token else {
-                return;
-            };
+            if let Some(token) = token {
+                let task = runtime.spawn({
+                    let gateway = gateway.clone();
+                    let workspace = workspace.clone();
+                    let status = status.clone();
+                    let token = token.clone();
+                    async move {
+                        let outcome = workspace
+                            .lock()
+                            .await
+                            .run_workflow(&*gateway, &token, workflow_id)
+                            .await;
+                        let notice = match outcome {
+                            Ok(()) => Notice {
+                                kind: NoticeKind::Info,
+                                text: labels::WORKFLOW_RUN_TRIGGERED.to_owned(),
+                            },
+                            Err(RunProblem::NoWorkflow) => Notice {
+                                kind: NoticeKind::Warning,
+                                text: labels::WORKFLOW_RUN_NO_SELECTION.to_owned(),
+                            },
+                            Err(RunProblem::NoDefaultBranch) => Notice {
+                                kind: NoticeKind::Warning,
+                                text: labels::WORKFLOW_RUN_NO_BRANCH.to_owned(),
+                            },
+                            Err(RunProblem::Gateway(problem)) => notice_for(problem),
+                        };
+                        status.lock().await.push(notice);
 
-            let task = runtime.spawn({
-                let gateway = gateway.clone();
-                let workspace = workspace.clone();
-                let status = status.clone();
-                let token = token.clone();
-                async move {
-                    let outcome = workspace
-                        .lock()
-                        .await
-                        .run_workflow(&*gateway, &token, workflow_id)
-                        .await;
-                    let notice = match outcome {
-                        Ok(()) => Notice {
-                            kind: NoticeKind::Info,
-                            text: labels::WORKFLOW_RUN_TRIGGERED.to_owned(),
-                        },
-                        Err(RunProblem::NoWorkflow) => Notice {
-                            kind: NoticeKind::Warning,
-                            text: labels::WORKFLOW_RUN_NO_SELECTION.to_owned(),
-                        },
-                        Err(RunProblem::NoDefaultBranch) => Notice {
-                            kind: NoticeKind::Warning,
-                            text: labels::WORKFLOW_RUN_NO_BRANCH.to_owned(),
-                        },
-                        Err(RunProblem::Gateway(problem)) => notice_for(problem),
-                    };
-                    status.lock().await.push(notice);
-
-                    if outcome.is_ok() {
-                        workspace.lock().await.reload_runs(&*gateway, &token).await;
+                        if outcome.is_ok() {
+                            workspace.lock().await.reload_runs(&*gateway, &token).await;
+                        }
                     }
+                });
+                if let Err(error) = task.await {
+                    warn!(%error, "a background task did not finish");
                 }
-            });
-            if let Err(error) = task.await {
-                warn!(%error, "a background task did not finish");
+
+                Self::refresh_status(&status, &this, cx).await;
+                Self::refresh_workspace(&workspace, &board, &this, cx).await;
             }
 
-            Self::refresh_status(&status, &this, cx).await;
-            Self::refresh_workspace(&workspace, &board, &this, cx).await;
+            Self::release_action(&this, ActionKey::Run, cx);
         })
         .detach();
     }
     /// Open or close the new-workflow form. Opening always starts blank.
     pub(super) fn toggle_new_workflow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 双击不该开一下又关掉。
+        if !self.accept_click(ActionKey::NewWorkflowForm) {
+            return;
+        }
         if self.creating_workflow {
             self.creating_workflow = false;
             cx.notify();
@@ -880,6 +1013,10 @@ impl AppView {
 
     /// Turn the form into a workflow file, push it, and show it in the editor.
     pub(super) fn create_workflow(&mut self, cx: &mut Context<Self>) {
+        // 上一次推送还没回来就不再推一次：双击不该提交两遍。
+        if !self.begin_action(ActionKey::PushWorkflow) {
+            return;
+        }
         let draft = self.draft_from_form(cx);
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
@@ -889,71 +1026,75 @@ impl AppView {
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let token = { manager.lock().await.token() };
-            let Some(token) = token else {
-                return;
-            };
+            if let Some(token) = token {
+                let task = runtime.spawn({
+                    let gateway = gateway.clone();
+                    let workspace = workspace.clone();
+                    let status = status.clone();
+                    let token = token.clone();
+                    async move {
+                        let outcome = workspace
+                            .lock()
+                            .await
+                            .create_workflow(&*gateway, &token, &draft)
+                            .await;
+                        let notice = match outcome {
+                            Ok(PushOutcome::Created) => Notice {
+                                kind: NoticeKind::Info,
+                                text: labels::WORKFLOW_NEW_PUSHED.to_owned(),
+                            },
+                            Ok(PushOutcome::Replaced) => Notice {
+                                kind: NoticeKind::Info,
+                                text: labels::WORKFLOW_NEW_REPLACED.to_owned(),
+                            },
+                            Err(CreateProblem::Draft(problem)) => Notice {
+                                kind: NoticeKind::Warning,
+                                text: draft_problem_text(problem).to_owned(),
+                            },
+                            Err(CreateProblem::NoRepository) => Notice {
+                                kind: NoticeKind::Warning,
+                                text: labels::WORKFLOW_NEW_NO_REPOSITORY.to_owned(),
+                            },
+                            Err(CreateProblem::NoDefaultBranch) => Notice {
+                                kind: NoticeKind::Warning,
+                                text: labels::WORKFLOW_NEW_NO_BRANCH.to_owned(),
+                            },
+                            Err(CreateProblem::Gateway(problem)) => notice_for(problem),
+                        };
+                        status.lock().await.push(notice);
+                        outcome.is_ok()
+                    }
+                });
+                let created = task.await.unwrap_or_else(|error| {
+                    warn!(%error, "a background task did not finish");
+                    false
+                });
 
-            let task = runtime.spawn({
-                let gateway = gateway.clone();
-                let workspace = workspace.clone();
-                let status = status.clone();
-                let token = token.clone();
-                async move {
-                    let outcome = workspace
-                        .lock()
-                        .await
-                        .create_workflow(&*gateway, &token, &draft)
-                        .await;
-                    let notice = match outcome {
-                        Ok(PushOutcome::Created) => Notice {
-                            kind: NoticeKind::Info,
-                            text: labels::WORKFLOW_NEW_PUSHED.to_owned(),
-                        },
-                        Ok(PushOutcome::Replaced) => Notice {
-                            kind: NoticeKind::Info,
-                            text: labels::WORKFLOW_NEW_REPLACED.to_owned(),
-                        },
-                        Err(CreateProblem::Draft(problem)) => Notice {
-                            kind: NoticeKind::Warning,
-                            text: draft_problem_text(problem).to_owned(),
-                        },
-                        Err(CreateProblem::NoRepository) => Notice {
-                            kind: NoticeKind::Warning,
-                            text: labels::WORKFLOW_NEW_NO_REPOSITORY.to_owned(),
-                        },
-                        Err(CreateProblem::NoDefaultBranch) => Notice {
-                            kind: NoticeKind::Warning,
-                            text: labels::WORKFLOW_NEW_NO_BRANCH.to_owned(),
-                        },
-                        Err(CreateProblem::Gateway(problem)) => notice_for(problem),
-                    };
-                    status.lock().await.push(notice);
-                    outcome.is_ok()
+                Self::refresh_status(&status, &this, cx).await;
+                Self::refresh_workspace(&workspace, &board, &this, cx).await;
+
+                if created
+                    && let Err(error) = this.update(cx, |this, cx| {
+                        this.creating_workflow = false;
+                        this.previewing_draft = false;
+                        cx.notify();
+                    })
+                {
+                    warn!(?error, "the view was gone before the update landed");
                 }
-            });
-            let created = task.await.unwrap_or_else(|error| {
-                warn!(%error, "a background task did not finish");
-                false
-            });
-
-            Self::refresh_status(&status, &this, cx).await;
-            Self::refresh_workspace(&workspace, &board, &this, cx).await;
-
-            if created
-                && let Err(error) = this.update(cx, |this, cx| {
-                    this.creating_workflow = false;
-                    this.previewing_draft = false;
-                    cx.notify();
-                })
-            {
-                warn!(?error, "the view was gone before the update landed");
             }
+
+            Self::release_action(&this, ActionKey::PushWorkflow, cx);
         })
         .detach();
     }
 
     /// Commit what the editor holds, on the repository's default branch.
     pub(super) fn save_workflow_file(&mut self, cx: &mut Context<Self>) {
+        // 上一次保存还没回来就不再提交一次：双击不该产生两个 commit。
+        if !self.begin_action(ActionKey::SaveWorkflow) {
+            return;
+        }
         let contents = self.yaml_editor.read(cx).value().to_string();
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
@@ -963,45 +1104,45 @@ impl AppView {
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let token = { manager.lock().await.token() };
-            let Some(token) = token else {
-                return;
-            };
-
-            let task = runtime.spawn({
-                let gateway = gateway.clone();
-                let workspace = workspace.clone();
-                let status = status.clone();
-                let token = token.clone();
-                async move {
-                    let outcome = workspace
-                        .lock()
-                        .await
-                        .save_workflow_file(&*gateway, &token, &contents)
-                        .await;
-                    let notice = match outcome {
-                        Ok(()) => Notice {
-                            kind: NoticeKind::Info,
-                            text: labels::WORKFLOW_SAVED.to_owned(),
-                        },
-                        Err(SaveProblem::NoWorkflow) => Notice {
-                            kind: NoticeKind::Warning,
-                            text: labels::WORKFLOW_RUN_NO_SELECTION.to_owned(),
-                        },
-                        Err(SaveProblem::NoDefaultBranch) => Notice {
-                            kind: NoticeKind::Warning,
-                            text: labels::WORKFLOW_SAVE_NO_BRANCH.to_owned(),
-                        },
-                        Err(SaveProblem::Gateway(problem)) => notice_for(problem),
-                    };
-                    status.lock().await.push(notice);
+            if let Some(token) = token {
+                let task = runtime.spawn({
+                    let gateway = gateway.clone();
+                    let workspace = workspace.clone();
+                    let status = status.clone();
+                    let token = token.clone();
+                    async move {
+                        let outcome = workspace
+                            .lock()
+                            .await
+                            .save_workflow_file(&*gateway, &token, &contents)
+                            .await;
+                        let notice = match outcome {
+                            Ok(()) => Notice {
+                                kind: NoticeKind::Info,
+                                text: labels::WORKFLOW_SAVED.to_owned(),
+                            },
+                            Err(SaveProblem::NoWorkflow) => Notice {
+                                kind: NoticeKind::Warning,
+                                text: labels::WORKFLOW_RUN_NO_SELECTION.to_owned(),
+                            },
+                            Err(SaveProblem::NoDefaultBranch) => Notice {
+                                kind: NoticeKind::Warning,
+                                text: labels::WORKFLOW_SAVE_NO_BRANCH.to_owned(),
+                            },
+                            Err(SaveProblem::Gateway(problem)) => notice_for(problem),
+                        };
+                        status.lock().await.push(notice);
+                    }
+                });
+                if let Err(error) = task.await {
+                    warn!(%error, "a background task did not finish");
                 }
-            });
-            if let Err(error) = task.await {
-                warn!(%error, "a background task did not finish");
+
+                Self::refresh_status(&status, &this, cx).await;
+                Self::refresh_workspace(&workspace, &board, &this, cx).await;
             }
 
-            Self::refresh_status(&status, &this, cx).await;
-            Self::refresh_workspace(&workspace, &board, &this, cx).await;
+            Self::release_action(&this, ActionKey::SaveWorkflow, cx);
         })
         .detach();
     }
@@ -1134,6 +1275,7 @@ impl AppView {
                         .xsmall()
                         .tooltip(labels::WORKFLOW_RUN)
                         .accessibility_label(labels::WORKFLOW_RUN)
+                        .disabled(self.action_in_flight(ActionKey::Run))
                         .on_click(cx.listener(move |this, _, _, cx| this.run_workflow(id, cx)))
                 });
                 div()
@@ -1274,7 +1416,7 @@ impl AppView {
             .child(header)
             .child(body)
             // 保存就在编辑器的右下角：改完这份文件，手不用离开编辑器。
-            .child(self.editor_save_ui(SaveTarget::WorkflowFile, !self.workflow_is_edited(cx), cx))
+            .child(self.editor_save_ui(SaveTarget::WorkflowFile, self.workflow_is_edited(cx), cx))
             .into_any_element()
     }
     /// 新建发布流：编辑器里装的是那份多平台构建脚本，跟别的文件一样编辑、保存。
@@ -1313,7 +1455,7 @@ impl AppView {
                     .child(Editor::new(&self.template_editor).h(relative(1.))),
             )
             // 模板没改过也要能保存：这一下就是"照模板建一条"。
-            .child(self.editor_save_ui(SaveTarget::ReleaseFlow, false, cx))
+            .child(self.editor_save_ui(SaveTarget::ReleaseFlow, true, cx))
             .into_any_element()
     }
 
@@ -1321,13 +1463,15 @@ impl AppView {
     fn editor_save_ui(
         &self,
         target: SaveTarget,
-        disabled: bool,
+        edited: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (id, button) = match target {
-            SaveTarget::WorkflowFile => ("workflow-save", labels::WORKFLOW_SAVE),
-            SaveTarget::ReleaseFlow => ("release-flow-save", labels::WORKFLOW_SAVE),
+        let (id, key) = match target {
+            SaveTarget::WorkflowFile => ("workflow-save", ActionKey::SaveWorkflow),
+            SaveTarget::ReleaseFlow => ("release-flow-save", ActionKey::SaveReleaseFlow),
         };
+        // 没改过，或者上一次还没写完，都没什么可提交的。
+        let disabled = !edited || self.action_in_flight(key);
 
         div()
             .flex()
@@ -1335,7 +1479,7 @@ impl AppView {
             .justify_end()
             .child(
                 Button::new(id)
-                    .label(button)
+                    .label(labels::WORKFLOW_SAVE)
                     .disabled(disabled)
                     .on_click(cx.listener(move |this, _, _, cx| match target {
                         SaveTarget::WorkflowFile => this.save_workflow_file(cx),
@@ -1350,6 +1494,9 @@ impl AppView {
     /// 开：把模板装进编辑器，抽屉让开，接着就能改、能保存。关：离开这一面，回到
     /// 选中的那条工作流（这次没写完的模板不留下，下次打开又是干净的一份）。
     pub(super) fn toggle_release_flow(&mut self, cx: &mut Context<Self>) {
+        if !self.accept_click(ActionKey::ReleaseFlow) {
+            return;
+        }
         if self.showing_template {
             self.showing_template = false;
             self.template_editor_text = None;
@@ -1368,8 +1515,11 @@ impl AppView {
 
     /// 把编辑器里的模板写进仓库：有就覆盖，没有就新建。
     pub(super) fn save_release_template(&mut self, cx: &mut Context<Self>) {
+        if !self.begin_action(ActionKey::SaveReleaseFlow) {
+            return;
+        }
         let contents = self.template_editor.read(cx).value().to_string();
-        self.push_release_template(contents, true, cx);
+        self.push_release_template(contents, true, ActionKey::SaveReleaseFlow, cx);
     }
 
     /// 采用发布模板：不绕去看一眼，直接把模板写成仓库里的一条工作流并推送。
@@ -1377,9 +1527,12 @@ impl AppView {
     /// 文件名与工作流名都来自模板本身（`release-target.yml` 与它 `name:` 那一行），
     /// 所以生成的这条工作流在 GitHub 上就叫模板里的名字，不再另起一个。
     pub(super) fn create_workflow_from_template(&mut self, cx: &mut Context<Self>) {
+        if !self.begin_action(ActionKey::UseTemplate) {
+            return;
+        }
         let contents =
             release_template::for_repository(self.selected.as_deref().unwrap_or_default());
-        self.push_release_template(contents, true, cx);
+        self.push_release_template(contents, true, ActionKey::UseTemplate, cx);
     }
 
     /// 把一段模板文本写进仓库：有就覆盖，没有就新建。`close_form` 为真时，写完离开
@@ -1388,6 +1541,7 @@ impl AppView {
         &mut self,
         contents: String,
         close_form: bool,
+        action: ActionKey,
         cx: &mut Context<Self>,
     ) {
         let gateway = self.gateway.clone();
@@ -1398,51 +1552,52 @@ impl AppView {
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let token = { manager.lock().await.token() };
-            let Some(token) = token else {
-                return;
-            };
-            let task = runtime.spawn({
-                let gateway = gateway.clone();
-                let workspace = workspace.clone();
-                let status = status.clone();
-                let token = token.clone();
-                async move {
-                    let outcome = workspace
-                        .lock()
-                        .await
-                        .push_workflow_file(
-                            &*gateway,
-                            &token,
-                            release_template::TEMPLATE_PATH,
-                            &contents,
-                            "发布模板",
-                        )
-                        .await;
-                    let written = outcome.is_ok();
-                    status.lock().await.push(template_notice(outcome));
-                    written
+            if let Some(token) = token {
+                let task = runtime.spawn({
+                    let gateway = gateway.clone();
+                    let workspace = workspace.clone();
+                    let status = status.clone();
+                    let token = token.clone();
+                    async move {
+                        let outcome = workspace
+                            .lock()
+                            .await
+                            .push_workflow_file(
+                                &*gateway,
+                                &token,
+                                release_template::TEMPLATE_PATH,
+                                &contents,
+                                "发布模板",
+                            )
+                            .await;
+                        let written = outcome.is_ok();
+                        status.lock().await.push(template_notice(outcome));
+                        written
+                    }
+                });
+                let written = task.await.unwrap_or_else(|error| {
+                    warn!(%error, "a background task did not finish");
+                    false
+                });
+
+                Self::refresh_status(&status, &this, cx).await;
+                Self::refresh_workspace(&workspace, &board, &this, cx).await;
+
+                // 建好了就离开新建这一面：工作流列表和编辑器已经在刷新里换成这一条新的了。
+                if written
+                    && close_form
+                    && let Err(error) = this.update(cx, |this, cx| {
+                        this.creating_workflow = false;
+                        this.previewing_draft = false;
+                        this.showing_template = false;
+                        cx.notify();
+                    })
+                {
+                    warn!(?error, "the view was gone before the update landed");
                 }
-            });
-            let written = task.await.unwrap_or_else(|error| {
-                warn!(%error, "a background task did not finish");
-                false
-            });
-
-            Self::refresh_status(&status, &this, cx).await;
-            Self::refresh_workspace(&workspace, &board, &this, cx).await;
-
-            // 建好了就离开新建这一面：工作流列表和编辑器已经在刷新里换成这一条新的了。
-            if written
-                && close_form
-                && let Err(error) = this.update(cx, |this, cx| {
-                    this.creating_workflow = false;
-                    this.previewing_draft = false;
-                    this.showing_template = false;
-                    cx.notify();
-                })
-            {
-                warn!(?error, "the view was gone before the update landed");
             }
+
+            Self::release_action(&this, action, cx);
         })
         .detach();
     }
@@ -1714,13 +1869,14 @@ impl AppView {
                 Button::new("draft-push")
                     .label(labels::WORKFLOW_NEW_PUSH)
                     .primary()
-                    .disabled(!ready)
+                    .disabled(!ready || self.action_in_flight(ActionKey::PushWorkflow))
                     .on_click(cx.listener(|this, _, _, cx| this.create_workflow(cx))),
             )
             .child(
                 // 从零拼一条多平台发布流水线太费事：一键用现成的模板建成一条工作流。
                 Button::new("draft-use-template")
                     .label(labels::WORKFLOW_NEW_USE_TEMPLATE)
+                    .disabled(self.action_in_flight(ActionKey::UseTemplate))
                     .on_click(cx.listener(|this, _, _, cx| this.create_workflow_from_template(cx))),
             );
 
@@ -1779,12 +1935,27 @@ impl AppView {
         let rows = self.run_rows(cx);
         let mut panel = div().flex().flex_col().gap_3().flex_1().min_h_0().w_full();
 
-        // The branch filter narrows the table's rows; the rest of the old
-        // filter row is gone, so sorting is what picks a column out now.
+        // 分支过滤 + 刷新：过滤窄化表格的行，刷新把状态重新问一遍（状态是会变的，
+        // 那一列不该停在旧值上）。
         panel = panel.child(
             div()
-                .max_w(px(320.))
-                .child(Input::new(&self.branch_input).id("runs-branch-filter")),
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .w(px(280.))
+                        .child(Input::new(&self.branch_input).id("runs-branch-filter")),
+                )
+                .child(
+                    Button::new("refresh-runs")
+                        .icon(IconName::RefreshCw)
+                        .tooltip(labels::RUNS_REFRESH)
+                        .accessibility_label(labels::RUNS_REFRESH)
+                        .disabled(self.action_in_flight(ActionKey::RefreshRuns))
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh_runs(cx))),
+                ),
         );
 
         if rows > 0 {
@@ -1806,6 +1977,7 @@ impl AppView {
                 div().flex().flex_row().justify_end().child(
                     Button::new("runs-load-more")
                         .label(labels::RUNS_LOAD_MORE)
+                        .disabled(self.action_in_flight(ActionKey::LoadMoreRuns))
                         .on_click(cx.listener(|this, _, _, cx| this.load_more_runs(cx))),
                 ),
             );
@@ -1845,6 +2017,7 @@ impl AppView {
                     .child(
                         Button::new("board-manifest-submit")
                             .label(labels::BOARD_MANIFEST_SUBMIT)
+                            .disabled(self.action_in_flight(ActionKey::SubmitManifest))
                             .on_click(cx.listener(|this, _, _, cx| this.submit_manifest(cx))),
                     )
                     .child(
@@ -1946,7 +2119,9 @@ impl AppView {
                 .child(
                     Button::new("board-trigger")
                         .label(labels::BOARD_TRIGGER)
-                        .disabled(version.is_none())
+                        .disabled(
+                            version.is_none() || self.action_in_flight(ActionKey::TriggerBuild),
+                        )
                         .on_click(cx.listener(|this, _, _, cx| this.trigger_build_from_board(cx))),
                 )
                 .child(
@@ -2033,7 +2208,10 @@ impl AppView {
                                     )))
                                     .xsmall()
                                     .label(labels::BOARD_PUBLISH)
-                                    .disabled(run_id.is_none() && cell.version.is_none())
+                                    .disabled(
+                                        (run_id.is_none() && cell.version.is_none())
+                                            || self.action_in_flight(ActionKey::Publish),
+                                    )
                                     .on_click(cx.listener({
                                         let target = target.clone();
                                         let channel = channel.clone();
@@ -2080,6 +2258,10 @@ impl AppView {
             self.push_board_notice(labels::BOARD_TARGET, NoticeKind::Warning, cx);
             return;
         };
+        // 上一次触发还没回来就不再发一次：双击不该变成两次构建。
+        if !self.begin_action(ActionKey::TriggerBuild) {
+            return;
+        }
 
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
@@ -2089,39 +2271,43 @@ impl AppView {
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let token = { manager.lock().await.token() };
-            let Some(token) = token else {
-                return;
-            };
-            let task = runtime.spawn({
-                let gateway = gateway.clone();
-                let board = board.clone();
-                let workspace = workspace.clone();
-                let status = status.clone();
-                let token = token.clone();
-                async move {
-                    let outcome = board
-                        .lock()
-                        .await
-                        .trigger(&*gateway, &token, &target, &version, None)
-                        .await;
-                    let notice = trigger_notice(outcome);
-                    status.lock().await.push(notice);
-                    // 触发之后顺手把运行列表刷新一遍，好让这次 dispatch 认领到它的 run。
-                    workspace.lock().await.reload_runs(&*gateway, &token).await;
+            if let Some(token) = token {
+                let task = runtime.spawn({
+                    let gateway = gateway.clone();
+                    let board = board.clone();
+                    let workspace = workspace.clone();
+                    let status = status.clone();
+                    let token = token.clone();
+                    async move {
+                        let outcome = board
+                            .lock()
+                            .await
+                            .trigger(&*gateway, &token, &target, &version, None)
+                            .await;
+                        let notice = trigger_notice(outcome);
+                        status.lock().await.push(notice);
+                        // 触发之后顺手把运行列表刷新一遍，好让这次 dispatch 认领到它的 run。
+                        workspace.lock().await.reload_runs(&*gateway, &token).await;
+                    }
+                });
+                if let Err(error) = task.await {
+                    warn!(%error, "a background task did not finish");
                 }
-            });
-            if let Err(error) = task.await {
-                warn!(%error, "a background task did not finish");
+
+                Self::refresh_status(&status, &this, cx).await;
+                Self::refresh_workspace(&workspace, &board, &this, cx).await;
             }
 
-            Self::refresh_status(&status, &this, cx).await;
-            Self::refresh_workspace(&workspace, &board, &this, cx).await;
+            Self::release_action(&this, ActionKey::TriggerBuild, cx);
         })
         .detach();
     }
 
     /// 在看板和清单编辑器之间来回。关掉编辑器就把手上的草稿丢掉，下次从仓库那份重新起步。
     pub(super) fn toggle_manifest_editor(&mut self, cx: &mut Context<Self>) {
+        if !self.accept_click(ActionKey::ManifestEditor) {
+            return;
+        }
         self.editing_manifest = !self.editing_manifest;
         if !self.editing_manifest {
             self.manifest_editor_text = None;
@@ -2144,6 +2330,10 @@ impl AppView {
             );
             return;
         }
+        // 上一次提交还没回来就不再开第二个 PR：双击不该变成两条分支、两个 PR。
+        if !self.begin_action(ActionKey::SubmitManifest) {
+            return;
+        }
 
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
@@ -2153,49 +2343,48 @@ impl AppView {
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let token = { manager.lock().await.token() };
-            let Some(token) = token else {
-                return;
-            };
-            // PR 的基线是仓库的默认分支，得先把仓库那一侧的答案拿过来。
-            let base = { workspace.lock().await.default_branch().map(str::to_owned) };
-            let Some(base) = base else {
-                let notice = Notice {
-                    kind: NoticeKind::Warning,
-                    text: labels::BOARD_MANIFEST_NO_BASE.to_owned(),
-                };
-                let task = runtime.spawn({
-                    let status = status.clone();
-                    async move {
-                        status.lock().await.push(notice);
+            if let Some(token) = token {
+                // PR 的基线是仓库的默认分支，得先把仓库那一侧的答案拿过来。
+                let base = { workspace.lock().await.default_branch().map(str::to_owned) };
+                if let Some(base) = base {
+                    let task = runtime.spawn({
+                        let gateway = gateway.clone();
+                        let board = board.clone();
+                        let status = status.clone();
+                        let token = token.clone();
+                        async move {
+                            let outcome = board
+                                .lock()
+                                .await
+                                .save_manifest(&*gateway, &token, &base, &contents)
+                                .await;
+                            status.lock().await.push(manifest_write_notice(outcome));
+                        }
+                    });
+                    if let Err(error) = task.await {
+                        warn!(%error, "a background task did not finish");
                     }
-                });
-                if let Err(error) = task.await {
-                    warn!(%error, "a background task did not finish");
+                } else {
+                    let notice = Notice {
+                        kind: NoticeKind::Warning,
+                        text: labels::BOARD_MANIFEST_NO_BASE.to_owned(),
+                    };
+                    let task = runtime.spawn({
+                        let status = status.clone();
+                        async move {
+                            status.lock().await.push(notice);
+                        }
+                    });
+                    if let Err(error) = task.await {
+                        warn!(%error, "a background task did not finish");
+                    }
                 }
-                Self::refresh_status(&status, &this, cx).await;
-                return;
-            };
 
-            let task = runtime.spawn({
-                let gateway = gateway.clone();
-                let board = board.clone();
-                let status = status.clone();
-                let token = token.clone();
-                async move {
-                    let outcome = board
-                        .lock()
-                        .await
-                        .save_manifest(&*gateway, &token, &base, &contents)
-                        .await;
-                    status.lock().await.push(manifest_write_notice(outcome));
-                }
-            });
-            if let Err(error) = task.await {
-                warn!(%error, "a background task did not finish");
+                Self::refresh_status(&status, &this, cx).await;
+                Self::refresh_workspace(&workspace, &board, &this, cx).await;
             }
 
-            Self::refresh_status(&status, &this, cx).await;
-            Self::refresh_workspace(&workspace, &board, &this, cx).await;
+            Self::release_action(&this, ActionKey::SubmitManifest, cx);
         })
         .detach();
     }
@@ -2233,6 +2422,10 @@ impl AppView {
             self.push_board_notice(labels::BOARD_NO_VERSION, NoticeKind::Warning, cx);
             return;
         };
+        // 上一次发布还没回来就不再登记一次：双击不该变成两条指针。
+        if !self.begin_action(ActionKey::Publish) {
+            return;
+        }
 
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
@@ -2242,29 +2435,30 @@ impl AppView {
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             let token = { manager.lock().await.token() };
-            let Some(token) = token else {
-                return;
-            };
-            let task = runtime.spawn({
-                let gateway = gateway.clone();
-                let board = board.clone();
-                let status = status.clone();
-                let token = token.clone();
-                async move {
-                    let outcome = board
-                        .lock()
-                        .await
-                        .publish(&*gateway, &token, &target, &channel, &version)
-                        .await;
-                    status.lock().await.push(publish_notice(outcome));
+            if let Some(token) = token {
+                let task = runtime.spawn({
+                    let gateway = gateway.clone();
+                    let board = board.clone();
+                    let status = status.clone();
+                    let token = token.clone();
+                    async move {
+                        let outcome = board
+                            .lock()
+                            .await
+                            .publish(&*gateway, &token, &target, &channel, &version)
+                            .await;
+                        status.lock().await.push(publish_notice(outcome));
+                    }
+                });
+                if let Err(error) = task.await {
+                    warn!(%error, "a background task did not finish");
                 }
-            });
-            if let Err(error) = task.await {
-                warn!(%error, "a background task did not finish");
+
+                Self::refresh_status(&status, &this, cx).await;
+                Self::refresh_workspace(&workspace, &board, &this, cx).await;
             }
 
-            Self::refresh_status(&status, &this, cx).await;
-            Self::refresh_workspace(&workspace, &board, &this, cx).await;
+            Self::release_action(&this, ActionKey::Publish, cx);
         })
         .detach();
     }
@@ -2316,6 +2510,25 @@ fn template_notice(outcome: Result<(PushOutcome, String), CreateProblem>) -> Not
             text: draft_problem_text(problem).to_owned(),
         },
         Err(CreateProblem::Gateway(problem)) => notice_for(problem),
+    }
+}
+
+/// 取消/删除一次运行的结果：说清楚成没成，问题出在哪就照原样说。
+fn run_change_notice(change: RunChange, outcome: Result<(), RunActionProblem>) -> Notice {
+    match outcome {
+        Ok(()) => Notice {
+            kind: NoticeKind::Info,
+            text: match change {
+                RunChange::Cancel => labels::RUNS_CANCELLED,
+                RunChange::Delete => labels::RUNS_DELETED,
+            }
+            .to_owned(),
+        },
+        Err(RunActionProblem::NoRepository) => Notice {
+            kind: NoticeKind::Warning,
+            text: labels::RUNS_NO_REPOSITORY.to_owned(),
+        },
+        Err(RunActionProblem::Gateway(problem)) => notice_for(problem),
     }
 }
 
@@ -2425,7 +2638,7 @@ mod tests {
     use crate::app::{BoardCell, BoardRow, BoardSnapshot, ManifestState};
     use crate::release::ReleaseState;
 
-    use super::{AppView, CHANNELS, DrawerKind, ReleaseBoard, Root, Services};
+    use super::{ActionKey, AppView, CHANNELS, DrawerKind, ReleaseBoard, Root, Services};
 
     /// One run of the harness repository's workflow, with the fields the table
     /// shows.
@@ -2664,6 +2877,8 @@ mod tests {
             window.draw(cx).clear(cx);
             assert!(window.find("workflow-draft-pane").visible());
 
+            // 防抖会挡掉"开→立刻关"的第二下（那正是它的用处），测试里直接放行这一次。
+            view.update(cx, |view, _| view.last_clicked.clear());
             window.click("new-workflow-off", cx);
             window.draw(cx).clear(cx);
             assert!(window.try_find("workflow-draft-pane").is_none());
@@ -2805,6 +3020,8 @@ mod tests {
             );
 
             // 取消编辑回到看板那一面。
+            // 防抖会挡掉紧接着的第二下（那正是它的用处），测试里直接放行这一次。
+            view.update(cx, |view, _| view.last_clicked.clear());
             window.click("board-manifest-cancel", cx);
             window.draw(cx).clear(cx);
             assert!(window.try_find("board-manifest-editor").is_none());
@@ -2901,6 +3118,8 @@ mod tests {
             );
 
             // 再点一次就是取消：编辑器关上，回到那条工作流的文件。
+            // 防抖会挡掉紧接着的第二下（那正是它的用处），测试里直接放行这一次。
+            view.update(cx, |view, _| view.last_clicked.clear());
             window.click("cancel-release-flow", cx);
             window.draw(cx).clear(cx);
             assert!(window.try_find("release-flow-pane").is_none());
@@ -2915,6 +3134,8 @@ mod tests {
 
         // 取消之后再打开：又是一份干净的模板（没留下上次的草稿）。
         cx.update_window(handle, |_, window, cx| {
+            // 上一次点击刚过去，先把这个动作的防抖放行。
+            view.update(cx, |view, _| view.last_clicked.clear());
             window.click("new-release-flow", cx);
             window.draw(cx).clear(cx);
             assert!(window.find("release-flow-pane").visible());
@@ -2933,6 +3154,51 @@ mod tests {
             assert!(text.contains("octo/alpha"), "重开后不是模板：{text:?}");
         })
         .unwrap();
+    }
+
+    /// 双击不是两件事：开关类动作靠得太近的第二下不算数。
+    #[gpui_kit::test]
+    fn a_double_click_opens_the_release_flow_just_once(cx: &mut TestAppContext) {
+        let (handle, _view, _editor) = workspace_page(cx);
+        let handle: gpui_kit::AnyWindowHandle = handle.into();
+
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.click("new-release-flow", cx);
+            window.draw(cx).clear(cx);
+            assert!(window.find("release-flow-pane").visible());
+
+            // 手快再点一下（其实是双击的第二下）：这一下不算数，编辑器还开着。
+            window.click("cancel-release-flow", cx);
+            window.draw(cx).clear(cx);
+            assert!(
+                window.find("release-flow-pane").visible(),
+                "双击把编辑器开一下又关掉了"
+            );
+            assert!(window.try_find("cancel-release-flow").is_some());
+        })
+        .unwrap();
+    }
+
+    /// 已经在飞的动作，同一个再认领一次要落空；回来之后又能认领。
+    #[gpui_kit::test]
+    fn an_action_already_in_flight_swallows_the_second_click(cx: &mut TestAppContext) {
+        let (_handle, view, _editor) = workspace_page(cx);
+
+        view.update(cx, |view, cx| {
+            assert!(view.begin_action(ActionKey::Run));
+            assert!(view.action_in_flight(ActionKey::Run));
+            // 上一次还没回来：这一次点击不算数。
+            assert!(!view.begin_action(ActionKey::Run));
+
+            view.end_action(ActionKey::Run, cx);
+            assert!(!view.action_in_flight(ActionKey::Run));
+            // 回来了，下一次点击照常。
+            assert!(view.begin_action(ActionKey::Run));
+
+            // 别的动作不受影响：锁是按动作分的。
+            assert!(view.begin_action(ActionKey::PushWorkflow));
+        });
     }
 
     #[gpui_kit::test]
@@ -2989,6 +3255,54 @@ mod tests {
 
             // 不能手动跑的那一条没有按钮。
             assert!(window.try_find("workflow-run-2").is_none());
+        })
+        .unwrap();
+    }
+
+    /// 运行记录：搜索框旁边有刷新，行尾那一列按状态给取消或删除。
+    #[gpui_kit::test]
+    fn the_runs_table_refreshes_and_offers_cancel_or_delete(cx: &mut TestAppContext) {
+        let (handle, view, _editor) = workspace_page(cx);
+        let handle: gpui_kit::AnyWindowHandle = handle.into();
+
+        view.update(cx, |view, cx| {
+            // 一条还在跑、一条已经跑完。
+            view.runs = vec![
+                WorkflowRun {
+                    status: RunStatus::InProgress,
+                    conclusion: None,
+                    ..run(1, 1, "main", "success")
+                },
+                run(2, 1, "main", "success"),
+            ];
+            view.runs_state = LoadState::Loaded;
+            view.begin_drawer_open(cx);
+            view.drawer_kind = DrawerKind::Runs;
+            view.refresh_run_table(cx);
+            cx.notify();
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+
+            // 刷新按钮在分支过滤框后面，是个图标按钮。
+            let filter = window.find("runs-branch-filter");
+            let refresh = window.find("refresh-runs");
+            assert_eq!(refresh.label(), Some(crate::labels::RUNS_REFRESH));
+            assert!(
+                refresh.bounds().origin.x > filter.bounds().origin.x,
+                "刷新不在搜索框后面：{:?} vs {:?}",
+                refresh.bounds(),
+                filter.bounds()
+            );
+
+            // 没跑完的给取消，跑完了的给删除。
+            let cancel = window.find("run-cancel-1");
+            assert_eq!(cancel.label(), Some(crate::labels::RUNS_CANCEL));
+            let delete = window.find("run-delete-2");
+            assert_eq!(delete.label(), Some(crate::labels::RUNS_DELETE));
+            assert!(window.try_find("run-delete-1").is_none());
+            assert!(window.try_find("run-cancel-2").is_none());
         })
         .unwrap();
     }

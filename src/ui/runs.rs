@@ -11,6 +11,7 @@ const RUN_COLUMN_CONCLUSION: &str = "conclusion";
 const RUN_COLUMN_BRANCH: &str = "branch";
 const RUN_COLUMN_EVENT: &str = "event";
 const RUN_COLUMN_CREATED: &str = "created";
+const RUN_COLUMN_ACTION: &str = "action";
 
 /// The runs table. Rows are the runs the workspace holds after the branch
 /// filter, so the delegate never fetches anything itself.
@@ -47,6 +48,8 @@ impl RunTableDelegate {
                 Column::new(RUN_COLUMN_CREATED, labels::RUNS_COLUMN_CREATED)
                     .width(180.)
                     .sortable(),
+                // 操作列不参与排序：它是按钮，不是可以比较的值。
+                Column::new(RUN_COLUMN_ACTION, labels::RUNS_COLUMN_ACTION).width(120.),
             ],
         }
     }
@@ -100,7 +103,7 @@ impl TableDelegate for RunTableDelegate {
         row_ix: usize,
         col_ix: usize,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let Some(run) = self.runs.get(row_ix) else {
             return div().into_any_element();
@@ -134,6 +137,49 @@ impl TableDelegate for RunTableDelegate {
                 .into_any_element(),
             RUN_COLUMN_EVENT => Label::new(run.event.clone()).text_sm().into_any_element(),
             RUN_COLUMN_CREATED => Label::new(created_at(run)).text_sm().into_any_element(),
+            // 还没跑完的可以取消，跑完了的可以删除——GitHub 的两个动作都落在运行上，
+            // 进行中的 job 跟着这次运行一起停或一起没。
+            RUN_COLUMN_ACTION => {
+                let run_id = run.id;
+                let view = self.view.clone();
+                let completed = run.status == RunStatus::Completed;
+                let (id, label, tooltip, key) = if completed {
+                    (
+                        format!("run-delete-{run_id}"),
+                        labels::RUNS_DELETE,
+                        labels::RUNS_DELETE_TOOLTIP,
+                        ActionKey::DeleteRun,
+                    )
+                } else {
+                    (
+                        format!("run-cancel-{run_id}"),
+                        labels::RUNS_CANCEL,
+                        labels::RUNS_CANCEL_TOOLTIP,
+                        ActionKey::CancelRun,
+                    )
+                };
+                // 上一下还没回来就置灰：同一个动作不能同时来两下。
+                let busy = self
+                    .view
+                    .upgrade()
+                    .is_some_and(|view| view.read(cx).action_in_flight(key));
+
+                Button::new(SharedString::from(id))
+                    .xsmall()
+                    .label(label)
+                    .tooltip(tooltip)
+                    .disabled(busy)
+                    .on_click(move |_, _, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            if completed {
+                                this.delete_run(run_id, cx);
+                            } else {
+                                this.cancel_run(run_id, cx);
+                            }
+                        });
+                    })
+                    .into_any_element()
+            }
             _ => div().into_any_element(),
         }
     }

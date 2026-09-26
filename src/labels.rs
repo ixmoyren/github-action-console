@@ -165,6 +165,17 @@ pub const RUNS_COLUMN_CONCLUSION: &str = "运行结果";
 pub const RUNS_COLUMN_BRANCH: &str = "分支";
 pub const RUNS_COLUMN_EVENT: &str = "触发方式";
 pub const RUNS_COLUMN_CREATED: &str = "执行时间";
+pub const RUNS_COLUMN_ACTION: &str = "操作";
+pub const RUNS_REFRESH: &str = "刷新";
+pub const RUNS_CANCEL: &str = "取消";
+pub const RUNS_DELETE: &str = "删除";
+pub const RUNS_CANCEL_TOOLTIP: &str = "取消这次运行：还没跑完的 job 会一起停。";
+pub const RUNS_DELETE_TOOLTIP: &str = "删除这次运行：连同它的日志与构建产物。";
+pub const RUNS_CANCELLED: &str = "已取消这次运行。";
+pub const RUNS_CANCEL_FAILED: &str = "这次运行没能取消。";
+pub const RUNS_DELETED: &str = "已删除这条运行记录。";
+pub const RUNS_DELETE_FAILED: &str = "这条运行记录没能删除。";
+pub const RUNS_NO_REPOSITORY: &str = "没有打开的仓库，做不了这一步。";
 pub const RUNS_BRANCH_PLACEHOLDER: &str = "按分支过滤";
 pub const VALUE_MISSING: &str = "—";
 

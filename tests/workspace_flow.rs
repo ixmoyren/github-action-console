@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use github_action_console::app::{
-    AppProblem, CreateProblem, LoadState, PushOutcome, RunProblem, SaveProblem, Workspace,
-    WorkspaceTab,
+    AppProblem, CreateProblem, LoadState, PushOutcome, RunActionProblem, RunProblem, SaveProblem,
+    Workspace, WorkspaceTab,
 };
 use github_action_console::github::{
     Account, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, FileContents, FileWrite,
@@ -34,6 +34,9 @@ struct FakeGateway {
     dispatch_results: Mutex<VecDeque<Result<(), GatewayError>>>,
     run_pages: Mutex<VecDeque<Result<WorkflowRunPage, GatewayError>>>,
     run_requests: Mutex<Vec<(Option<u64>, u32)>>,
+    cancelled: Mutex<Vec<u64>>,
+    deleted: Mutex<Vec<u64>>,
+    run_action_results: Mutex<VecDeque<Result<(), GatewayError>>>,
 }
 
 impl FakeGateway {
@@ -92,6 +95,28 @@ impl FakeGateway {
 
     fn run_requests(&self) -> Vec<(Option<u64>, u32)> {
         self.run_requests.lock().unwrap().clone()
+    }
+
+    fn push_run_action(&self, response: Result<(), GatewayError>) {
+        self.run_action_results.lock().unwrap().push_back(response);
+    }
+
+    fn cancelled(&self) -> Vec<u64> {
+        self.cancelled.lock().unwrap().clone()
+    }
+
+    fn deleted(&self) -> Vec<u64> {
+        self.deleted.lock().unwrap().clone()
+    }
+
+    fn next_run_action(&self) -> Result<(), GatewayError> {
+        self.run_action_results
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Err(GatewayError::Unexpected(
+                "no scripted run action".to_owned(),
+            )))
     }
 }
 
@@ -246,6 +271,28 @@ impl GitHubGateway for FakeGateway {
             .unwrap_or(Err(GatewayError::Unexpected(
                 "no scripted dispatch".to_owned(),
             )))
+    }
+
+    async fn cancel_workflow_run(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        run_id: u64,
+    ) -> Result<(), GatewayError> {
+        self.cancelled.lock().unwrap().push(run_id);
+        self.next_run_action()
+    }
+
+    async fn delete_workflow_run(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        run_id: u64,
+    ) -> Result<(), GatewayError> {
+        self.deleted.lock().unwrap().push(run_id);
+        self.next_run_action()
     }
 
     async fn list_jobs(
@@ -973,6 +1020,72 @@ async fn workflow_filter_is_pushed_to_the_fetch() {
 
     assert_eq!(gateway.run_requests(), vec![(Some(7), 1)]);
     assert_eq!(workspace.visible_runs().len(), 1);
+}
+
+/// 取消一次运行：问 GitHub 取消，然后把列表重新读一遍（状态要跟着变）。
+#[tokio::test]
+async fn cancelling_a_run_tells_github_and_reloads_the_list() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_run_action(Ok(()));
+    gateway.push_runs(Ok(page(
+        vec![run(1, 7, RunStatus::InProgress, None, "main")],
+        false,
+    )));
+    gateway.push_runs(Ok(page(
+        vec![run(1, 7, RunStatus::Completed, Some("cancelled"), "main")],
+        false,
+    )));
+    let mut workspace = entered("octo/alpha");
+    workspace.reload_runs(&*gateway, &token()).await;
+
+    let outcome = workspace.cancel_run(&*gateway, &token(), 1).await;
+
+    assert_eq!(outcome, Ok(()));
+    assert_eq!(gateway.cancelled(), vec![1]);
+    assert!(gateway.deleted().is_empty());
+    // 取消之后又读了一遍：列表里那一条已经是被取消的结论。
+    assert_eq!(gateway.run_requests(), vec![(None, 1), (None, 1)]);
+    assert_eq!(
+        workspace.visible_runs()[0].conclusion.as_deref(),
+        Some("cancelled")
+    );
+}
+
+/// 删除一次运行：问 GitHub 删除，然后重新读列表。
+#[tokio::test]
+async fn deleting_a_run_tells_github_and_reloads_the_list() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_run_action(Ok(()));
+    gateway.push_runs(Ok(page(
+        vec![run(1, 7, RunStatus::Completed, Some("success"), "main")],
+        false,
+    )));
+    gateway.push_runs(Ok(page(Vec::new(), false)));
+    let mut workspace = entered("octo/alpha");
+    workspace.reload_runs(&*gateway, &token()).await;
+
+    let outcome = workspace.delete_run(&*gateway, &token(), 1).await;
+
+    assert_eq!(outcome, Ok(()));
+    assert_eq!(gateway.deleted(), vec![1]);
+    assert!(gateway.cancelled().is_empty());
+    // 删掉之后列表里就没有它了。
+    assert!(workspace.visible_runs().is_empty());
+}
+
+/// GitHub 拒绝的时候，控制台照实说，不装作删掉了。
+#[tokio::test]
+async fn a_refused_run_action_is_surfaced() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_run_action(Err(GatewayError::Forbidden));
+    let mut workspace = entered("octo/alpha");
+
+    let outcome = workspace.delete_run(&*gateway, &token(), 1).await;
+
+    assert_eq!(
+        outcome,
+        Err(RunActionProblem::Gateway(AppProblem::Forbidden))
+    );
 }
 
 #[tokio::test]

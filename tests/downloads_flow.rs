@@ -151,6 +151,26 @@ impl GitHubGateway for FakeGateway {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
 
+    async fn cancel_workflow_run(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _run_id: u64,
+    ) -> Result<(), GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn delete_workflow_run(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _run_id: u64,
+    ) -> Result<(), GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
     async fn list_jobs(
         &self,
         _token: &SecretToken,
