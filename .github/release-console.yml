@@ -1,0 +1,58 @@
+# 发布清单：发布目标与打包配置的定义（ADR-0003）。
+# 通道指针不在这里 —— 它按 (发布目标, 通道) 存在控制台里（ADR-0005）。
+version: 1
+
+targets:
+  web-arm:
+    platform: macos
+    arch: arm64
+    distribution: github-releases
+    packaging: macos-dmg
+  web-intel:
+    platform: macos
+    arch: x64
+    distribution: github-releases
+    packaging: macos-dmg
+  windows:
+    platform: windows
+    arch: x64
+    distribution: github-releases
+    packaging: windows-msi
+    simulated:
+      - code-signing
+  mas:
+    platform: macos
+    arch: universal
+    distribution: mac-app-store
+    packaging: mas-pkg
+    simulated:
+      - signing
+      - notarization
+      - app-store-submission
+  # 演示自加：题目给的发布目标是 MAS / web-arm / web-intel / Windows，
+  # 这个目标只用来展示第三种产物形式（tar.gz）。
+  linux-tar:
+    platform: linux
+    arch: x64
+    distribution: github-releases
+    packaging: linux-tar
+
+# 打包配置 = 要触发的 workflow + inputs 模板。target / version 由控制台在触发时补齐，
+# 所以模板里只放这个配置特有的部分（这里是产物形式）。
+packaging:
+  macos-dmg:
+    workflow: release-target.yml
+    inputs:
+      package: dmg
+  windows-msi:
+    workflow: release-target.yml
+    inputs:
+      package: msi
+  mas-pkg:
+    workflow: release-target.yml
+    inputs:
+      package: pkg
+  linux-tar:
+    workflow: release-target.yml
+    inputs:
+      package: tar.gz

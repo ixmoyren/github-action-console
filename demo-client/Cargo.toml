@@ -1,0 +1,12 @@
+[package]
+name = "gac-demo-client"
+version = "0.1.0"
+edition = "2024"
+description = "Release Console 的示例客户端：只显示版本号、构建目标与打包配置"
+license = "MIT"
+build = "build.rs"
+
+[dependencies]
+
+# 独立包：不属于仓库根的 Cargo 工作区。CI 用
+# `cargo build --manifest-path demo-client/Cargo.toml --target <triple>` 构建它。

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Windows 安装包定义（WiX v3，草案）。
+  由 .github/workflows/release-target.yml 的 windows 目标调用：
+    candle -dSourceDir=<release 目录> -dExeName=<exe> -dProductVersion=<x.y.z> \
+           -dUpgradeCode=<稳定的 GUID> main.wxs
+    light -ext WixUIExtension -o <target>-<version>.msi main.wixobj
+  真正的代码签名（signtool）在 CI 里标注为模拟（无证书）。
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+    Id="*"
+    Name="GitHub Action Console Demo Client"
+    Language="1033"
+    Version="$(var.ProductVersion)"
+    Manufacturer="github-action-console"
+    UpgradeCode="$(var.UpgradeCode)"
+  >
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+    <MajorUpgrade DowngradeErrorMessage="已安装更新的版本。" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="GA Console Demo Client">
+          <Component Id="ClientExe" Guid="*">
+            <File
+              Id="ClientExeFile"
+              Source="$(var.SourceDir)\$(var.ExeName)"
+              KeyPath="yes"
+            />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="Main" Title="Demo Client" Level="1">
+      <ComponentRef Id="ClientExe" />
+    </Feature>
+  </Product>
+</Wix>
