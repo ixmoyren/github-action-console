@@ -27,6 +27,15 @@ pub(super) enum DrawerKind {
     Board,
 }
 
+/// 编辑器右下角那颗保存按钮改的是哪一份东西。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SaveTarget {
+    /// 选中的工作流文件。
+    WorkflowFile,
+    /// 新建发布流用的模板。
+    ReleaseFlow,
+}
+
 impl AppView {
     pub(super) async fn refresh_workspace(
         workspace: &Arc<Mutex<Workspace>>,
@@ -38,6 +47,7 @@ impl AppView {
         let tab = guard.tab();
         let workflows = guard.workflows().to_vec();
         let workflows_state = guard.workflows_state();
+        let runnable = guard.runnable().clone();
         let selected_workflow = guard.selected_workflow_id();
         let workflow_file = guard.workflow_file().map(str::to_owned);
         let workflow_file_state = guard.workflow_file_state();
@@ -59,6 +69,7 @@ impl AppView {
             this.workspace_tab = tab;
             this.workflows = workflows;
             this.workflows_state = workflows_state;
+            this.runnable = runnable;
             this.selected_workflow_id = selected_workflow;
             this.workflow_file = workflow_file;
             this.workflow_file_state = workflow_file_state;
@@ -99,6 +110,23 @@ impl AppView {
                     .lock()
                     .await
                     .load_workflows(&*gateway, &token)
+                    .await;
+            }
+        });
+        if let Err(error) = task.await {
+            warn!(%error, "a background task did not finish");
+        }
+
+        // 每条工作流能不能手动跑，得看它自己的文件：列表里那颗运行按钮就靠这个。
+        let task = runtime.spawn({
+            let gateway = gateway.clone();
+            let workspace = workspace.clone();
+            let token = token.clone();
+            async move {
+                workspace
+                    .lock()
+                    .await
+                    .load_workflow_triggers(&*gateway, &token)
                     .await;
             }
         });
@@ -311,18 +339,20 @@ impl AppView {
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_new_workflow(window, cx))),
             )
             .child(
-                // 发布模板：不用从空白表单拼，直接把仓库里那份构建脚本采用过去。
+                // 新建发布流：不用从空白表单拼，把那份多平台构建脚本装进编辑器，
+                // 接着就能改，按编辑器右下角的保存落进仓库。开着的时候这颗按钮
+                // 变成"取消"，再点就把编辑器关掉。
                 Button::new(if self.showing_template {
-                    "release-template-off"
+                    "cancel-release-flow"
                 } else {
-                    "release-template-on"
+                    "new-release-flow"
                 })
                 .label(if self.showing_template {
-                    labels::WORKSPACE_TEMPLATE_CLOSE
+                    labels::WORKSPACE_CANCEL_RELEASE_FLOW
                 } else {
-                    labels::WORKSPACE_TEMPLATE
+                    labels::WORKSPACE_NEW_RELEASE_FLOW
                 })
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_release_template(cx))),
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_release_flow(cx))),
             );
 
         div()
@@ -592,9 +622,9 @@ impl AppView {
             });
         }
     }
-    /// Trigger the selected workflow on the default branch, then pull the runs
-    /// so the new run shows up without a manual refresh.
-    pub(super) fn run_selected_workflow(&mut self, cx: &mut Context<Self>) {
+    /// 跑列表里的某一条工作流：在默认分支上 dispatch，然后把运行记录拉一遍，
+    /// 好让这次跑出来的记录自己冒出来。
+    pub(super) fn run_workflow(&mut self, workflow_id: u64, cx: &mut Context<Self>) {
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
         let workspace = self.workspace.clone();
@@ -616,7 +646,7 @@ impl AppView {
                     let outcome = workspace
                         .lock()
                         .await
-                        .run_selected_workflow(&*gateway, &token)
+                        .run_workflow(&*gateway, &token, workflow_id)
                         .await;
                     let notice = match outcome {
                         Ok(()) => Notice {
@@ -997,7 +1027,7 @@ impl AppView {
                     // pane is what clips it.
                     .overflow_hidden()
                     .child(if self.showing_template {
-                        self.release_template_ui(cx)
+                        self.release_flow_ui(cx)
                     } else {
                         match (self.creating_workflow, self.previewing_draft) {
                             (true, true) => self.workflow_preview_ui(cx),
@@ -1079,8 +1109,12 @@ impl AppView {
         let id = self.selected_workflow_id?;
         self.workflows.iter().find(|workflow| workflow.id == id)
     }
-    /// The left column: one title per workflow, with the save and run buttons
-    /// under them.
+    /// 这条工作流能不能手动跑：文件里有没有 `workflow_dispatch`，读到过才算数。
+    fn can_run(&self, workflow_id: u64) -> bool {
+        self.runnable.get(&workflow_id).copied().unwrap_or(false)
+    }
+    /// 左列：一条工作流一行。能手动跑的那些，行尾就是它的运行按钮——按钮跟着条目走，
+    /// 不必先选中再跑。
     fn workflow_list_ui(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected_color = cx.theme().primary;
         let selected_background = cx.theme().list_active;
@@ -1093,12 +1127,23 @@ impl AppView {
             .map(|workflow| {
                 let id = workflow.id;
                 let selected = self.selected_workflow_id == Some(id);
+                // 只有读到了 `workflow_dispatch` 的工作流才给运行按钮。
+                let run = self.can_run(id).then(|| {
+                    Button::new(SharedString::from(format!("workflow-run-{id}")))
+                        .icon(IconName::Play)
+                        .xsmall()
+                        .tooltip(labels::WORKFLOW_RUN)
+                        .accessibility_label(labels::WORKFLOW_RUN)
+                        .on_click(cx.listener(move |this, _, _, cx| this.run_workflow(id, cx)))
+                });
                 div()
                     .id(SharedString::from(format!("workflow-title-{id}")))
                     .test_support()
                     .flex()
                     .flex_row()
                     .items_center()
+                    .justify_between()
+                    .gap_2()
                     .px_2()
                     .py_1()
                     .rounded(radius)
@@ -1115,6 +1160,7 @@ impl AppView {
                             .text_color(selected_color)
                     })
                     .child(workflow.name.clone())
+                    .children(run)
                     .on_click(cx.listener(move |this, _, _, cx| this.select_workflow(id, cx)))
                     .into_any_element()
             })
@@ -1142,24 +1188,7 @@ impl AppView {
             _ => {}
         }
 
-        let run_button = Button::new("workflow-run")
-            .label(labels::WORKFLOW_RUN)
-            .disabled(self.selected_workflow_id.is_none())
-            .on_click(cx.listener(|this, _, _, cx| this.run_selected_workflow(cx)));
-
-        let save_button = Button::new("workflow-save")
-            .label(labels::WORKFLOW_SAVE)
-            .disabled(!self.workflow_is_edited(cx))
-            .on_click(cx.listener(|this, _, _, cx| this.save_workflow_file(cx)));
-
-        // A new workflow is unaffected by the selected one's save and run.
-        let selected_actions = div()
-            .flex()
-            .flex_row()
-            .gap_2()
-            .child(save_button)
-            .child(run_button);
-
+        // 只有名字：保存与运行都属于被选中的那一条，它们跟着编辑器走。
         div()
             .flex()
             .flex_col()
@@ -1168,7 +1197,6 @@ impl AppView {
             .h_full()
             .min_h_0()
             .child(list)
-            .when(!self.creating_workflow, |this| this.child(selected_actions))
             .into_any_element()
     }
     /// Whether the editor holds text the repository does not have yet.
@@ -1205,7 +1233,7 @@ impl AppView {
         let header = div()
             .flex()
             .flex_row()
-            .items_baseline()
+            .items_center()
             .gap_2()
             .child(Label::new(workflow.name.clone()).text_lg())
             .child(
@@ -1245,16 +1273,21 @@ impl AppView {
             .h_full()
             .child(header)
             .child(body)
+            // 保存就在编辑器的右下角：改完这份文件，手不用离开编辑器。
+            .child(self.editor_save_ui(SaveTarget::WorkflowFile, !self.workflow_is_edited(cx), cx))
             .into_any_element()
     }
-    /// 发布模板：一份来自本仓库的多平台构建脚本，采用到当前仓库时先给人看、给人改。
-    fn release_template_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// 新建发布流：编辑器里装的是那份多平台构建脚本，跟别的文件一样编辑、保存。
+    ///
+    /// 名字与路径都来自模板本身（`name:` 那一行与 `release-target.yml`），所以保存
+    /// 之后仓库里多的这条工作流就叫模板里的名字。
+    fn release_flow_ui(&self, cx: &mut Context<Self>) -> AnyElement {
         let header = div()
             .flex()
             .flex_row()
-            .items_baseline()
+            .items_center()
             .gap_2()
-            .child(Label::new(labels::WORKFLOW_TEMPLATE_TITLE).text_lg())
+            .child(Label::new(release_template::workflow_name()).text_lg())
             .child(
                 Label::new(release_template::TEMPLATE_PATH)
                     .text_sm()
@@ -1271,24 +1304,7 @@ impl AppView {
             .child(header)
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        Button::new("template-save")
-                            .label(labels::WORKFLOW_TEMPLATE_SAVE)
-                            .on_click(cx.listener(|this, _, _, cx| this.save_release_template(cx))),
-                    )
-                    .child(
-                        Label::new(labels::WORKFLOW_TEMPLATE_HINT)
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground),
-                    ),
-            )
-            .child(
-                div()
-                    .id("template-pane")
+                    .id("release-flow-pane")
                     .test_support()
                     .flex_1()
                     .min_h_0()
@@ -1296,20 +1312,56 @@ impl AppView {
                     // 编辑器按自己的文字量排高度，高度得由这一层说了算。
                     .child(Editor::new(&self.template_editor).h(relative(1.))),
             )
+            // 模板没改过也要能保存：这一下就是"照模板建一条"。
+            .child(self.editor_save_ui(SaveTarget::ReleaseFlow, false, cx))
             .into_any_element()
     }
 
-    /// 打开/收起发布模板。打开时把抽屉让开，模板占的就是编辑器那块地方。
-    pub(super) fn toggle_release_template(&mut self, cx: &mut Context<Self>) {
+    /// 编辑器右下角的保存：两条编辑路径（工作流文件、发布模板）共用同一颗按钮。
+    fn editor_save_ui(
+        &self,
+        target: SaveTarget,
+        disabled: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (id, button) = match target {
+            SaveTarget::WorkflowFile => ("workflow-save", labels::WORKFLOW_SAVE),
+            SaveTarget::ReleaseFlow => ("release-flow-save", labels::WORKFLOW_SAVE),
+        };
+
+        div()
+            .flex()
+            .flex_row()
+            .justify_end()
+            .child(
+                Button::new(id)
+                    .label(button)
+                    .disabled(disabled)
+                    .on_click(cx.listener(move |this, _, _, cx| match target {
+                        SaveTarget::WorkflowFile => this.save_workflow_file(cx),
+                        SaveTarget::ReleaseFlow => this.save_release_template(cx),
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// 新建发布流 / 取消新建发布流：同一颗按钮上的两个动作。
+    ///
+    /// 开：把模板装进编辑器，抽屉让开，接着就能改、能保存。关：离开这一面，回到
+    /// 选中的那条工作流（这次没写完的模板不留下，下次打开又是干净的一份）。
+    pub(super) fn toggle_release_flow(&mut self, cx: &mut Context<Self>) {
         if self.showing_template {
             self.showing_template = false;
-        } else {
-            self.creating_workflow = false;
-            self.previewing_draft = false;
-            self.showing_template = true;
-            if self.runs_drawer_visible() {
-                self.close_drawer(cx);
-            }
+            self.template_editor_text = None;
+            cx.notify();
+            return;
+        }
+
+        self.creating_workflow = false;
+        self.previewing_draft = false;
+        self.showing_template = true;
+        if self.runs_drawer_visible() {
+            self.close_drawer(cx);
         }
         cx.notify();
     }
@@ -1317,7 +1369,7 @@ impl AppView {
     /// 把编辑器里的模板写进仓库：有就覆盖，没有就新建。
     pub(super) fn save_release_template(&mut self, cx: &mut Context<Self>) {
         let contents = self.template_editor.read(cx).value().to_string();
-        self.push_release_template(contents, false, cx);
+        self.push_release_template(contents, true, cx);
     }
 
     /// 采用发布模板：不绕去看一眼，直接把模板写成仓库里的一条工作流并推送。
@@ -1379,12 +1431,13 @@ impl AppView {
             Self::refresh_status(&status, &this, cx).await;
             Self::refresh_workspace(&workspace, &board, &this, cx).await;
 
-            // 建好了就离开表单：工作流列表和编辑器已经在刷新里换成这一条新的了。
+            // 建好了就离开新建这一面：工作流列表和编辑器已经在刷新里换成这一条新的了。
             if written
                 && close_form
                 && let Err(error) = this.update(cx, |this, cx| {
                     this.creating_workflow = false;
                     this.previewing_draft = false;
+                    this.showing_template = false;
                     cx.notify();
                 })
             {
@@ -2802,33 +2855,29 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn the_release_template_opens_in_place_of_the_editor(cx: &mut TestAppContext) {
+    fn the_release_flow_button_opens_the_editor_and_again_closes_it(cx: &mut TestAppContext) {
         let (handle, view, _editor) = workspace_page(cx);
         let handle: gpui_kit::AnyWindowHandle = handle.into();
 
         cx.update_window(handle, |_, window, cx| {
             window.draw(cx).clear(cx);
-            assert!(window.try_find("template-pane").is_none());
+            assert!(window.try_find("release-flow-pane").is_none());
             assert!(window.try_find("workflow-editor-pane").is_some());
 
-            // 新建工作流的表单里有"使用发布模板"：那一下是直接建一条并推送，不是
-            // 换一面给人看，所以表单还开着（真要写文件了）。
-            window.click("new-workflow-on", cx);
+            // 表头的"新建发布流"：打开编辑器，里面装的是那份多平台构建脚本。
+            window.click("new-release-flow", cx);
             window.draw(cx).clear(cx);
-            let use_template = window.find("draft-use-template");
-            assert_eq!(
-                use_template.label(),
-                Some(crate::labels::WORKFLOW_NEW_USE_TEMPLATE)
-            );
-            assert!(window.find("workflow-draft-pane").visible());
-            window.click("new-workflow-off", cx);
-            window.draw(cx).clear(cx);
-
-            // 表头的"发布模板"才是摆开来看的那一面：它占编辑器那块地方。
-            window.click("release-template-on", cx);
-            window.draw(cx).clear(cx);
-            assert!(window.find("template-pane").visible());
+            assert!(window.find("release-flow-pane").visible());
+            // 原来那份工作流文件让开，左列表还在。
+            assert!(window.try_find("workflow-editor-pane").is_none());
             assert!(window.try_find("workflow-title-1").is_some());
+            // 保存就在编辑器的右下角。
+            assert!(window.try_find("release-flow-save").is_some());
+            // 开着的时候，表头那颗按钮变成"取消新建发布流"。
+            assert_eq!(
+                window.find("cancel-release-flow").label(),
+                Some(crate::labels::WORKSPACE_CANCEL_RELEASE_FLOW)
+            );
         })
         .unwrap();
 
@@ -2851,10 +2900,95 @@ mod tests {
                 "模板不是那份多平台发布脚本：{text:?}"
             );
 
-            window.click("release-template-off", cx);
+            // 再点一次就是取消：编辑器关上，回到那条工作流的文件。
+            window.click("cancel-release-flow", cx);
             window.draw(cx).clear(cx);
-            assert!(window.try_find("template-pane").is_none());
+            assert!(window.try_find("release-flow-pane").is_none());
             assert!(window.try_find("workflow-editor-pane").is_some());
+            // 按钮也回到"新建发布流"。
+            assert_eq!(
+                window.find("new-release-flow").label(),
+                Some(crate::labels::WORKSPACE_NEW_RELEASE_FLOW)
+            );
+        })
+        .unwrap();
+
+        // 取消之后再打开：又是一份干净的模板（没留下上次的草稿）。
+        cx.update_window(handle, |_, window, cx| {
+            window.click("new-release-flow", cx);
+            window.draw(cx).clear(cx);
+            assert!(window.find("release-flow-pane").visible());
+        })
+        .unwrap();
+        for _ in 0..2 {
+            cx.update_window(handle, |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        }
+        cx.update_window(handle, |_, _window, cx| {
+            let text = view.read_with(cx, |view, cx| {
+                view.template_editor.read(cx).value().to_string()
+            });
+            assert!(text.contains("octo/alpha"), "重开后不是模板：{text:?}");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_run_button_only_shows_for_a_manually_runnable_workflow(cx: &mut TestAppContext) {
+        let (handle, view, _editor) = workspace_page(cx);
+        let handle: gpui_kit::AnyWindowHandle = handle.into();
+
+        // 还不知道任何一条的触发方式：左列没有运行按钮。
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(window.try_find("workflow-run-1").is_none());
+            assert!(window.try_find("workflow-title-1").is_some());
+        })
+        .unwrap();
+
+        // 两条工作流：只有 ci 能手动跑。
+        view.update(cx, |view, cx| {
+            view.workflows = vec![
+                Workflow {
+                    id: 1,
+                    name: "ci".to_owned(),
+                    path: ".github/workflows/ci.yml".to_owned(),
+                },
+                Workflow {
+                    id: 2,
+                    name: "nightly".to_owned(),
+                    path: ".github/workflows/nightly.yml".to_owned(),
+                },
+            ];
+            view.runnable.insert(1, true);
+            view.runnable.insert(2, false);
+            cx.notify();
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            let run = window.find("workflow-run-1");
+            assert_eq!(run.role(), Some(gpui_kit::Role::Button));
+            assert_eq!(run.label(), Some(crate::labels::WORKFLOW_RUN));
+
+            // 运行按钮长在它自己那一行里，而且整行都在左边那一栏。
+            let row = window.find("workflow-title-1");
+            assert!(
+                run.bounds().origin.x >= row.bounds().origin.x
+                    && run.bounds().origin.x < row.bounds().origin.x + row.bounds().size.width,
+                "运行按钮不在这一行里：{:?} vs {:?}",
+                run.bounds(),
+                row.bounds()
+            );
+            assert!(
+                run.bounds().origin.x < px(220.),
+                "运行按钮跑到编辑器那边去了：{:?}",
+                run.bounds()
+            );
+
+            // 不能手动跑的那一条没有按钮。
+            assert!(window.try_find("workflow-run-2").is_none());
         })
         .unwrap();
     }

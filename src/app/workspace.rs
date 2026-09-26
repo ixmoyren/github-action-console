@@ -1,10 +1,12 @@
+use std::collections::HashMap;
+
 use tracing::{debug, info, warn};
 
 use crate::github::{
     FileWrite, GatewayError, GitHubGateway, RunFilter, RunStatusFilter, SecretToken, Workflow,
     WorkflowRun, any_running, split_full_name,
 };
-use crate::workflow_draft::{DraftProblem, WorkflowDraft};
+use crate::workflow_draft::{DraftProblem, WorkflowDraft, can_run_manually};
 
 use super::repositories::AppProblem;
 
@@ -96,6 +98,9 @@ pub struct Workspace {
     runs_filter: RunFilter,
     runs_page: u32,
     runs_has_more: bool,
+    /// 每条工作流能不能手动触发。GitHub 的工作流列表不说触发方式，只能读文件；读到的
+    /// 结果留着，同一个仓库里不重复读，读不到的下次再来。
+    runnable: HashMap<u64, bool>,
 }
 
 impl Default for Workspace {
@@ -123,6 +128,7 @@ impl Workspace {
             runs_filter: RunFilter::default(),
             runs_page: 0,
             runs_has_more: false,
+            runnable: HashMap::new(),
         }
     }
 
@@ -160,6 +166,7 @@ impl Workspace {
             self.runs_filter = RunFilter::default();
             self.runs_page = 0;
             self.runs_has_more = false;
+            self.runnable.clear();
             self.tab = WorkspaceTab::Workflows;
             self.repository = Some(full_name.to_owned());
         }
@@ -176,6 +183,44 @@ impl Workspace {
 
     pub fn workflows_state(&self) -> LoadState {
         self.workflows_state
+    }
+
+    /// 这条工作流现在能不能手动跑（旁边要不要给运行按钮）。还没读到文件、或者读失败，
+    /// 就先当不能——按钮宁可不出现，也不要给一个点了会失败的。
+    pub fn can_run(&self, workflow_id: u64) -> bool {
+        self.runnable.get(&workflow_id).copied().unwrap_or(false)
+    }
+
+    /// 每条工作流的触发方式都读一遍：列表里那条工作流旁边该不该有运行按钮，取决于
+    /// 它自己文件里有没有 `workflow_dispatch`。已经读过的不再读。
+    pub async fn load_workflow_triggers(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+    ) {
+        let Some((owner, repository)) = self.parts() else {
+            return;
+        };
+        // 先照一份名单，读文件的时候不再借着 self 的那些字段。
+        let pending: Vec<(u64, String)> = self
+            .workflows
+            .iter()
+            .filter(|workflow| !self.runnable.contains_key(&workflow.id))
+            .map(|workflow| (workflow.id, workflow.path.clone()))
+            .collect();
+
+        for (id, path) in pending {
+            match gateway
+                .file_contents(token, &owner, &repository, &path)
+                .await
+            {
+                Ok(contents) => {
+                    self.runnable.insert(id, can_run_manually(&contents.text));
+                }
+                // 读不到就先不下结论：下次进这个仓库再读一遍。
+                Err(error) => warn!(%error, %path, "could not read a workflow file"),
+            }
+        }
     }
 
     /// The workflow the file viewer is showing, if any.
@@ -195,6 +240,11 @@ impl Workspace {
 
     pub fn workflow_file_state(&self) -> LoadState {
         self.workflow_file_state
+    }
+
+    /// 哪些工作流能手动跑，按 id 一份。界面上换一批工作流时整份换掉。
+    pub fn runnable(&self) -> &HashMap<u64, bool> {
+        &self.runnable
     }
 
     /// The repository's own runner labels, on top of the hosted ones the
@@ -402,6 +452,8 @@ impl Workspace {
             .await
             .map_err(|error| SaveProblem::Gateway(AppProblem::from_gateway(&error)))?;
 
+        // 文件换了内容，触发方式可能也换了：下次再读一遍这份。
+        self.runnable.remove(&workflow.id);
         self.load_workflow_file(gateway, token).await;
         Ok(())
     }
@@ -502,10 +554,21 @@ impl Workspace {
         gateway: &dyn GitHubGateway,
         token: &SecretToken,
     ) -> Result<(), RunProblem> {
-        let Some((owner, repository)) = self.parts() else {
+        let Some(workflow_id) = self.selected_workflow else {
             return Err(RunProblem::NoWorkflow);
         };
-        let Some(workflow_id) = self.selected_workflow else {
+        self.run_workflow(gateway, token, workflow_id).await
+    }
+
+    /// 跑指定的那条工作流——列表里每条工作流旁边的运行按钮点下去的就是这一条，
+    /// 不必先把它选中。
+    pub async fn run_workflow(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        workflow_id: u64,
+    ) -> Result<(), RunProblem> {
+        let Some((owner, repository)) = self.parts() else {
             return Err(RunProblem::NoWorkflow);
         };
         let Some(reference) = self.default_branch.clone() else {

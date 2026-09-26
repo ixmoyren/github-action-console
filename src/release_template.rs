@@ -18,6 +18,18 @@ pub fn for_repository(repository: &str) -> String {
     format!("# 由 GitHub Action Console 为 {repository} 生成。\n{TEMPLATE}")
 }
 
+/// 模板里那条工作流的名字：`name:` 那一行。
+///
+/// 控制台用模板建流时，工作流叫什么由模板说了算，所以这个名字也从同一处读，不另写
+/// 一份字面量。
+pub fn workflow_name() -> &'static str {
+    TEMPLATE
+        .lines()
+        .find_map(|line| line.strip_prefix("name:"))
+        .map(str::trim)
+        .unwrap_or(TEMPLATE_PATH)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,5 +67,11 @@ mod tests {
     fn the_template_lands_where_the_console_reads_workflows() {
         assert!(TEMPLATE_PATH.starts_with(".github/workflows/"));
         assert!(TEMPLATE_PATH.ends_with(".yml"));
+    }
+
+    #[test]
+    fn the_workflow_name_comes_from_the_template() {
+        assert_eq!(workflow_name(), "Release target");
+        assert!(!workflow_name().is_empty());
     }
 }

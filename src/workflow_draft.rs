@@ -112,6 +112,54 @@ impl Triggers {
     }
 }
 
+/// 一份**已经写在仓库里**的 workflow 能不能手动触发：它有没有 `workflow_dispatch`。
+///
+/// 运行按钮只在能手动触发的工作流上出现，而 GitHub 的工作流列表并不说触发方式，所以
+/// 只能看文件本身。这是读一段文本，不是解析整份 YAML：`on:` 下面比它深的键都算在
+/// 这一段里，一行写法（`on: [push, workflow_dispatch]`）也认。
+pub fn can_run_manually(yaml: &str) -> bool {
+    let mut on_indent = None;
+
+    for line in yaml.lines() {
+        let body = line.trim_end();
+        let trimmed = body.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = body.len() - trimmed.len();
+
+        if let Some(on) = on_indent {
+            // 缩进回到 `on:` 同级或更浅，说明这一段读完了。
+            if indent <= on {
+                on_indent = None;
+            } else {
+                if key_of(trimmed) == "workflow_dispatch" {
+                    return true;
+                }
+                continue;
+            }
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("on:") {
+            // 一行写法：`on: workflow_dispatch`、`on: [push, workflow_dispatch]`。
+            if rest.contains("workflow_dispatch") {
+                return true;
+            }
+            on_indent = Some(indent);
+        }
+    }
+
+    false
+}
+
+/// 一行里的键名；引号去掉，冒号后面是什么不关心。
+fn key_of(line: &str) -> &str {
+    match line.split_once(':') {
+        Some((key, _)) => key.trim().trim_matches(['"', '\'']),
+        None => line.trim(),
+    }
+}
+
 /// One job in the draft.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JobDraft {
@@ -603,5 +651,44 @@ mod tests {
 
         assert!(yaml.ends_with('\n'));
         assert!(!yaml.ends_with("\n\n"));
+    }
+
+    #[test]
+    fn a_workflow_with_a_dispatch_trigger_can_be_run_by_hand() {
+        // 块状写法：`on:` 下面那一层。
+        let block = "name: ci\non:\n  workflow_dispatch:\n  push:\n    branches: [main]\n";
+        assert!(can_run_manually(block));
+
+        // 一行写法：清单里直接列出来。
+        assert!(can_run_manually(
+            "name: ci\non: [push, workflow_dispatch]\n"
+        ));
+        assert!(can_run_manually("name: ci\non: workflow_dispatch\n"));
+        // 表单生成的那份也算。
+        assert!(can_run_manually(draft("ci").to_yaml().unwrap().as_str()));
+    }
+
+    #[test]
+    fn a_workflow_without_a_dispatch_trigger_cannot_be_run_by_hand() {
+        assert!(!can_run_manually("name: ci\non: push\n"));
+        assert!(!can_run_manually(
+            "name: ci\non:\n  push:\n    branches: [main]\n"
+        ));
+        assert!(!can_run_manually(
+            "name: ci\non:\n  schedule:\n    - cron: '0 3 * * *'\n"
+        ));
+        // 没有 `on:` 的文件，里面提到过 workflow_dispatch 也不算。
+        assert!(!can_run_manually(
+            "name: ci\njobs:\n  build:\n    run: echo hi\n"
+        ));
+        assert!(!can_run_manually(""));
+    }
+
+    #[test]
+    fn a_later_top_level_key_ends_the_trigger_block() {
+        // `jobs:` 里再出现同名键，不能算成触发方式。
+        let yaml = "on:\n  push:\njobs:\n  workflow_dispatch:\n    steps: []\n";
+
+        assert!(!can_run_manually(yaml));
     }
 }

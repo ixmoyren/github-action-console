@@ -59,8 +59,8 @@ pub const WORKSPACE_RUN_HISTORY: &str = "← 运行记录";
 pub const WORKSPACE_RUN_HISTORY_CLOSE: &str = "关闭运行记录 →";
 pub const WORKSPACE_BOARD: &str = "发布看板 →";
 pub const WORKSPACE_BOARD_CLOSE: &str = "关闭看板";
-pub const WORKSPACE_TEMPLATE: &str = "发布模板";
-pub const WORKSPACE_TEMPLATE_CLOSE: &str = "关闭模板";
+pub const WORKSPACE_NEW_RELEASE_FLOW: &str = "新建发布流";
+pub const WORKSPACE_CANCEL_RELEASE_FLOW: &str = "取消新建发布流";
 
 pub const BOARD_VERSION: &str = "版本";
 pub const BOARD_VERSION_HINT: &str = "例如 v0.1.0";
@@ -103,11 +103,8 @@ pub const WORKFLOW_SAVE: &str = "保存";
 pub const WORKFLOW_SAVED: &str = "已保存并提交到默认分支。";
 pub const WORKFLOW_SAVE_NO_BRANCH: &str = "无法确定该仓库的默认分支，暂时不能保存。";
 
-pub const WORKFLOW_TEMPLATE_TITLE: &str = "多平台发布模板";
-pub const WORKFLOW_TEMPLATE_SAVE: &str = "保存模板";
 pub const WORKFLOW_TEMPLATE_SAVED: &str = "已用发布模板新建工作流并推送到默认分支。";
 pub const WORKFLOW_TEMPLATE_REPLACED: &str = "已用发布模板覆盖仓库里的同名工作流并推送到默认分支。";
-pub const WORKFLOW_TEMPLATE_HINT: &str = "写入 .github/workflows/release-target.yml：Windows / macOS-Intel / macOS-Arm / Linux 一起构建，tag 触发时把产物挂到 Release。文件已存在就覆盖。";
 
 pub const WORKFLOW_NEW: &str = "新建工作流";
 pub const WORKFLOW_NEW_CANCEL: &str = "取消新建";

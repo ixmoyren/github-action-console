@@ -386,6 +386,51 @@ fn entered(full_name: &str) -> Workspace {
 }
 
 #[tokio::test]
+async fn the_console_learns_which_workflows_can_be_run_by_hand() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_workflows(Ok(vec![workflow(1, "release-target"), workflow(2, "ci")]));
+    // 选中第一条时编辑器读的那一份，接着是扫描两条各自的文件。
+    gateway.push_file_text("name: Release target\non:\n  workflow_dispatch:\n", "sha-1");
+    gateway.push_file_text("name: Release target\non:\n  workflow_dispatch:\n", "sha-1");
+    gateway.push_file_text("name: ci\non: push\n", "sha-2");
+    let mut workspace = entered("octo/alpha");
+
+    workspace.load_workflows(&*gateway, &token()).await;
+    workspace.load_workflow_triggers(&*gateway, &token()).await;
+
+    // 有 workflow_dispatch 的能跑，只有 push 的不能。
+    assert!(workspace.can_run(1));
+    assert!(!workspace.can_run(2));
+
+    // 已经读过的不再读：再来一遍不会再发请求。
+    let reads = gateway.file_requests().len();
+    workspace.load_workflow_triggers(&*gateway, &token()).await;
+    assert_eq!(gateway.file_requests().len(), reads);
+}
+
+#[tokio::test]
+async fn a_workflow_file_that_could_not_be_read_gets_another_chance() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_workflows(Ok(vec![workflow(1, "ci")]));
+    // 编辑器读到的失败是一次性的；扫描时再读一次，这次读到了内容。
+    gateway.push_file(Err(GatewayError::Transport("offline".to_owned())));
+    gateway.push_file(Err(GatewayError::Transport("offline".to_owned())));
+    gateway.push_file_text("name: ci\non:\n  workflow_dispatch:\n", "sha-1");
+    let mut workspace = entered("octo/alpha");
+
+    workspace.load_workflows(&*gateway, &token()).await;
+    workspace.load_workflow_triggers(&*gateway, &token()).await;
+
+    // 第一次没读到：不下结论。
+    assert!(!workspace.can_run(1));
+
+    workspace.load_workflow_triggers(&*gateway, &token()).await;
+
+    // 再读一次读到了：能跑。
+    assert!(workspace.can_run(1));
+}
+
+#[tokio::test]
 async fn loads_the_repositorys_workflows() {
     let gateway = Arc::new(FakeGateway::default());
     gateway.push_workflows(Ok(vec![workflow(1, "ci"), workflow(2, "release")]));

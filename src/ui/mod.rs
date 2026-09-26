@@ -26,6 +26,7 @@ mod yaml_editor;
 
 pub use launch::run;
 
+pub(super) use std::collections::HashMap;
 pub(super) use std::sync::Arc;
 pub(super) use std::time::Duration;
 
@@ -154,6 +155,8 @@ struct AppView {
     selected: Option<String>,
     workflows: Vec<Workflow>,
     workflows_state: LoadState,
+    /// 每条工作流能不能手动跑。左列那条工作流旁边要不要给运行按钮看它。
+    runnable: HashMap<u64, bool>,
     selected_workflow_id: Option<u64>,
     workflow_file: Option<String>,
     workflow_file_state: LoadState,
@@ -378,6 +381,7 @@ impl AppView {
             selected: None,
             workflows: Vec::new(),
             workflows_state: LoadState::Idle,
+            runnable: HashMap::new(),
             selected_workflow_id: None,
             workflow_file: None,
             workflow_file_state: LoadState::Idle,
