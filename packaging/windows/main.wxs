@@ -10,6 +10,10 @@
   进 msi 的字符串一律只能是 ASCII：库的代码页是 1252，装不下中文，light 会以 LGHT0311
   拒绝。给 Product 加 Codepage="936" 试过一次，没用——它没改到库的代码页（light 报的
   还是 '1252'）。要让安装包说中文，得走 WixLocalization（zh-CN + Codepage）那条路。
+
+  Package/@Platform="x64"：装的 exe 是 x86_64，进的是 64 位的 Program Files，包不说
+  自己是 64 位的话组件默认按 32 位算，light 的校验会以 ICE80 拒（32BitComponent 用了
+  64BitDirectory）。
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product
@@ -20,7 +24,12 @@
     Manufacturer="github-action-console"
     UpgradeCode="$(var.UpgradeCode)"
   >
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+    <Package
+      InstallerVersion="500"
+      Compressed="yes"
+      InstallScope="perMachine"
+      Platform="x64"
+    />
     <!-- 这句话会进 msi，所以是英文：安装包本身（产品名、厂商、目录）也都是英文，
          语言是 1033。中文提示要等本地化那条路。 -->
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />

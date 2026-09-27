@@ -50,3 +50,13 @@
 全英文（产品名、厂商、目录），`Language` 是 1033，这样最一致，而且 ASCII 在任何代码页里都放得下，
 这一关不会再因为编码挂。验证过：wxs 里所有属性值都在 cp1252 内、非 ASCII 串为 0。
 要中文提示就得走 WixLocalization（zh-CN + Codepage）那条本地化路，另开一票。
+
+**2026-09-27 msi 打包第三关：ICE80（32 位组件装进 64 位目录）**。编码修好之后 light 终于
+走到校验，报了新错：`LGHT0204 : ICE80: This 32BitComponent ConsoleExe uses 64BitDirectory
+INSTALLFOLDER`（main.wxs (32)）。原因：组件没说自己是多少位，默认按 32 位算，而它装进的是
+`ProgramFiles64Folder`。改法按包的粒度来：`<Package ... Platform="x64" />`——这个包就该是
+64 位的（exe 是 `x86_64-pc-windows-msvc`，目录是 64 位的 Program Files），WiX 会把组件的
+默认位数跟着包走。`InstallerVersion="500"` 本来就在，64 位包要的正是这一档。
+
+记一笔现象：这三关是 **一个接一个露出来的**——编码错在链接阶段（LGHT0311），过不了就没机会
+跑到校验阶段（ICE80）。所以每修好一处，下一处的错误码都会变，那是进度而不是新问题。
