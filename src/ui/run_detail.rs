@@ -174,6 +174,37 @@ impl AppView {
         })
         .detach();
     }
+
+    /// 每个 job 的步骤各装进一个编辑器。
+    ///
+    /// job 从网络来，而编辑器只能在有 window 的帧里造，所以和 workflow 文件那次一样
+    /// 在 render 里对账：新来的 job 建一个，文本变了才写进去，走掉的 job 收掉。
+    pub(super) fn sync_job_editors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let jobs = self
+            .jobs
+            .iter()
+            .map(|job| (job.id, job_steps_text(job)))
+            .collect::<Vec<_>>();
+
+        for (id, text) in jobs {
+            let editor = match self.job_step_editors.get(&id).cloned() {
+                Some(editor) => editor,
+                None => {
+                    let editor = cx.new(|cx| yaml_editor::plain_editor_state(window, cx));
+                    self.job_step_editors.insert(id, editor.clone());
+                    editor
+                }
+            };
+            let applied = self.job_step_texts.entry(id).or_default();
+            super::workspace::push_editor_text(&editor, applied, text, window, cx);
+        }
+
+        // 换一次运行、或者某个 job 不在了，就把它那一份编辑器丢掉。
+        let live = self.jobs.iter().map(|job| job.id).collect::<HashSet<_>>();
+        self.job_step_editors.retain(|id, _| live.contains(id));
+        self.job_step_texts.retain(|id, _| live.contains(id));
+    }
+
     pub(super) fn run_detail_ui(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut panel = div().flex().flex_col().gap_3();
 
@@ -226,23 +257,20 @@ impl AppView {
                         .clone()
                         .unwrap_or_else(|| labels::VALUE_MISSING.to_owned()),
                 );
-                let steps = job
-                    .steps
-                    .iter()
-                    .map(|step| {
-                        format!(
-                            "{} {} {}",
-                            step.number,
-                            step.name,
-                            step.conclusion
-                                .clone()
-                                .unwrap_or_else(|| labels::VALUE_MISSING.to_owned())
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" / ");
+                // 步骤交给编辑器：行号、选择、复制都跟着它走。编辑器还没建出来时
+                // （换运行的那一帧）退回一行纯文本，别让这一段空着。
+                let steps_text = job_steps_text(job);
+                let steps = match self.job_step_editors.get(&id) {
+                    Some(editor) => Editor::new(editor)
+                        .h(steps_editor_height(editor, job.steps.len(), cx))
+                        .readonly(true)
+                        .into_any_element(),
+                    None => plain_steps(&steps_text).into_any_element(),
+                };
 
                 div()
+                    .id(SharedString::from(format!("job-card-{id}")))
+                    .test_support()
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -261,7 +289,8 @@ impl AppView {
                                     ),
                             ),
                     )
-                    .child(Label::new(format!("{}：{}", labels::JOB_STEPS, steps)).text_sm())
+                    .child(Label::new(labels::JOB_STEPS).text_sm())
+                    .child(steps)
                     .into_any_element()
             })
             .collect::<Vec<_>>();
@@ -472,7 +501,14 @@ impl AppView {
             DownloadState::Idle => {}
         }
 
-        panel.into_any_element()
+        // 整个 jobs 页都在一个可滚动容器里：job 卡片、步骤编辑器、日志、产物都跟着
+        // 这一条滚。抽屉本身高度固定，滚动的是它里面这一层。
+        panel
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scrollbar()
+            .id("run-detail-scroll")
+            .into_any_element()
     }
 
     /// 一条发布资产：名字、大小、时间，加一个下载入口。
@@ -502,6 +538,52 @@ impl AppView {
             )
             .into_any_element()
     }
+}
+
+/// gpui-component 的编辑器行高按字体尺寸的 1.5 倍算；主题还没量出来时先用等宽字体的
+/// 默认行高兜着。
+const STEPS_LINE_HEIGHT: f32 = 20.0;
+
+/// 编辑器自己的边框与内边距：它不随步数变，量出来的高度减去行高就是这个数。
+const STEPS_EDITOR_PADDING: f32 = 18.0;
+
+/// 步骤编辑器要占多高：行高 × 步数，加上编辑器自己的边框与内边距。
+///
+/// gpui-component 的编辑器不会自己长高（不给高度就只露一行），而整页是可滚动的，
+/// 所以这里按步数把高度算足：一个 job 的步骤要么一眼看完，要么整页滚下去看。
+fn steps_editor_height(editor: &Entity<EditorState>, rows: usize, cx: &App) -> Pixels {
+    let line = editor
+        .read(cx)
+        .line_height()
+        .unwrap_or(px(STEPS_LINE_HEIGHT));
+    line * rows.max(1) as f32 + px(STEPS_EDITOR_PADDING)
+}
+
+/// 一个 job 的步骤，一行一条：编号、名字、状态（有结论就报结论，否则报它还在做什么）。
+fn job_steps_text(job: &Job) -> String {
+    job.steps
+        .iter()
+        .map(|step| format!("{} {} · {}", step.number, step.name, step_state_text(step)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 一步的状态：跑完了说结论，"进行中"这类还没结论的步就说它自己的状态。
+fn step_state_text(step: &Step) -> String {
+    match step.conclusion.as_deref().filter(|value| !value.is_empty()) {
+        Some(conclusion) => labels::conclusion_label(Some(conclusion)),
+        None => step.status.label().to_owned(),
+    }
+}
+
+/// 步骤编辑器的兜底：编辑器还没建出来时，同一份步骤先当一行纯文本摆着。
+fn plain_steps(text: &str) -> Label {
+    let text = if text.is_empty() {
+        labels::VALUE_MISSING.to_owned()
+    } else {
+        text.replace('\n', " / ")
+    };
+    Label::new(text).text_sm()
 }
 
 /// 构建完成这一条：这次运行自己的状态与结论。

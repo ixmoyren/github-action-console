@@ -62,8 +62,8 @@ pub(super) use crate::github::GitHubGateway;
 pub(super) use crate::github::SecretToken;
 pub(super) use crate::github::client::OctocrabGateway;
 pub(super) use crate::github::{
-    BuildArtifact, CommitSummary, Job, ReleaseAsset, Repository, RunFilter, RunStatus, Workflow,
-    WorkflowRun, filter_log_lines, filter_repositories, filter_runs,
+    BuildArtifact, CommitSummary, Job, ReleaseAsset, Repository, RunFilter, RunStatus, Step,
+    Workflow, WorkflowRun, filter_log_lines, filter_repositories, filter_runs,
 };
 pub(super) use crate::labels;
 pub(super) use crate::release::{CHANNELS, ChannelPointer};
@@ -212,6 +212,11 @@ struct AppView {
     jobs: Vec<Job>,
     jobs_state: LoadState,
     selected_job: Option<u64>,
+    /// 每个 job 的步骤各装在一个编辑器里。job 是网络来的，编辑器只能在有 window 的
+    /// 帧里造，所以这两张表按 job id 建、按 job id 收；文本表记的是"已经喂进去的
+    /// 那一份"，没喂过就是 `None`。
+    job_step_editors: HashMap<u64, Entity<EditorState>>,
+    job_step_texts: HashMap<u64, Option<String>>,
     logs: Option<String>,
     logs_state: LoadState,
     logs_copied: bool,
@@ -435,6 +440,8 @@ impl AppView {
             jobs: Vec::new(),
             jobs_state: LoadState::Idle,
             selected_job: None,
+            job_step_editors: HashMap::new(),
+            job_step_texts: HashMap::new(),
             logs: None,
             logs_state: LoadState::Idle,
             logs_copied: false,

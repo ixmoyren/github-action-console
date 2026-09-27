@@ -2627,7 +2627,7 @@ fn draft_problem_text(problem: DraftProblem) -> &'static str {
 /// Hand text to an editor state. Editors only take text with a window in hand,
 /// and what they show arrives from a background task, so the handover happens
 /// between frames and only when the text actually changed.
-fn push_editor_text(
+pub(super) fn push_editor_text(
     editor: &Entity<EditorState>,
     applied: &mut Option<String>,
     contents: String,
@@ -2658,7 +2658,7 @@ mod tests {
     use gpui_kit::Entity;
     use gpui_kit::component::input::EditorState;
     use gpui_kit::test::TestWindowExt as _;
-    use gpui_kit::{AppContext as _, TestAppContext, WindowHandle, px, size};
+    use gpui_kit::{AppContext as _, ScrollDelta, TestAppContext, WindowHandle, point, px, size};
     use tokio::sync::Mutex;
 
     use crate::app::{
@@ -2666,7 +2666,9 @@ mod tests {
         RunDetail, Status, Workspace,
     };
     use crate::github::client::OctocrabGateway;
-    use crate::github::{Account, GitHubGateway, Repository, RunStatus, Workflow, WorkflowRun};
+    use crate::github::{
+        Account, GitHubGateway, Job, Repository, RunStatus, Step, Workflow, WorkflowRun,
+    };
     use crate::runtime::TokioRuntime;
     use crate::store::Store;
 
@@ -3463,5 +3465,105 @@ mod tests {
             assert!(window.try_find("open-runs-drawer").is_some());
         })
         .unwrap();
+    }
+
+    /// One job with a couple of finished steps.
+    fn job_with_steps(id: u64) -> Job {
+        let step = |number: i64, name: &str| Step {
+            number,
+            name: name.to_owned(),
+            status: RunStatus::Completed,
+            conclusion: Some("success".to_owned()),
+        };
+        Job {
+            id,
+            name: format!("build-{id}"),
+            status: RunStatus::Completed,
+            conclusion: Some("success".to_owned()),
+            steps: vec![step(1, "Set up job"), step(2, "Run tests")],
+        }
+    }
+
+    /// 运行详情页：整页装在一个可滚动容器里，每个 job 的步骤各有一个编辑器。
+    #[gpui_kit::test]
+    fn the_jobs_page_scrolls_and_shows_each_jobs_steps_in_an_editor(cx: &mut TestAppContext) {
+        let (handle, view, _editor) = workspace_page(cx);
+        let handle: gpui_kit::AnyWindowHandle = handle.into();
+
+        // 八个 job：比抽屉高得多，不滚就看不全。
+        let jobs = (0..8).map(|index| job_with_steps(100 + index)).collect();
+        view.update(cx, |view, cx| {
+            view.jobs = jobs;
+            view.jobs_state = LoadState::Loaded;
+            view.open_run = Some(1);
+            // 直接摆开抽屉，不走 open_drawer：那条路会去问 GitHub，测试里不需要
+            // 这种后台线程上的动静。
+            view.begin_drawer_open(cx);
+        });
+
+        // 一帧把每个 job 的编辑器建出来，下一帧把它们画出来。
+        for _ in 0..2 {
+            cx.update_window(handle, |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        }
+
+        let first = view.read_with(cx, |view, _| view.job_step_editors[&100].clone());
+
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            // 步骤进了编辑器：一行一步，编号、名字、状态都在。
+            assert_eq!(
+                first.read(cx).value().as_ref(),
+                "1 Set up job · 成功\n2 Run tests · 成功",
+                "the first job's steps never reached its editor"
+            );
+            let steps = window.find(("input", first.entity_id()));
+            assert!(steps.visible(), "the steps editor is not on screen");
+            // 编辑器按行数长高，而不是缩成一行。
+            assert!(
+                steps.bounds().size.height >= px(50.),
+                "the steps editor is {} high",
+                steps.bounds().size.height
+            );
+
+            // 页面被抽屉的高度兜住：最下面那个 job 在窗口之外，正是要滚的理由。
+            assert!(window.find("job-card-100").visible());
+            assert!(
+                window.find("job-card-107").bounds().bottom() > window.viewport_size().height,
+                "the last job card fits in the window; there is nothing to scroll"
+            );
+
+            // 滚一下，下面的 job 跟着上来。
+            let before = window.find("job-card-107").bounds().origin.y;
+            window.scroll(
+                "job-card-100",
+                ScrollDelta::Pixels(point(px(0.), px(-200.))),
+                cx,
+            );
+            let after = window.find("job-card-107").bounds().origin.y;
+            assert!(
+                after < before,
+                "the jobs page did not scroll: {before} -> {after}"
+            );
+        })
+        .unwrap();
+
+        // job 走掉了，它那份编辑器也跟着走，不留在屋里。
+        view.update(cx, |view, cx| {
+            view.jobs.clear();
+            cx.notify();
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        view.read_with(cx, |view, _| {
+            assert!(
+                view.job_step_editors.is_empty(),
+                "a job that left kept its editor"
+            );
+        });
     }
 }

@@ -22,11 +22,25 @@ use crate::yaml::{self, TokenKind};
 /// The language name a workflow file's editor reports.
 const YAML_LANGUAGE: &str = "yaml";
 
+/// The language of text that is shown rather than edited: no highlighter.
+const PLAIN_LANGUAGE: &str = "plaintext";
+
 /// Build the editor state a workflow file is shown in.
 pub(super) fn yaml_editor_state(window: &mut Window, cx: &mut Context<EditorState>) -> EditorState {
     let mut state = EditorState::new(window, cx).language(YAML_LANGUAGE);
     state.set_highlighter_factory(yaml_highlighter_factory(), cx);
     state
+}
+
+/// Build the editor state plain text is shown in — a job's steps, say.
+///
+/// It is an editor all the same: line numbers, selection and copy come from the
+/// component, and it closes over no grammar of its own.
+pub(super) fn plain_editor_state(
+    window: &mut Window,
+    cx: &mut Context<EditorState>,
+) -> EditorState {
+    EditorState::new(window, cx).language(PLAIN_LANGUAGE)
 }
 
 fn yaml_highlighter_factory() -> InputHighlighterFactory {

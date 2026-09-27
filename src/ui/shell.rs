@@ -49,6 +49,8 @@ impl Render for AppView {
         // The workflow file is read in the background, but the editor can only
         // take text with a window in hand. This is where the two meet.
         self.sync_yaml_editor(window, cx);
+        // Same handover for the steps of every job on the run-detail page.
+        self.sync_job_editors(window, cx);
 
         // The window title carries the signed-in user; the app chrome no longer
         // repeats it anywhere on screen.
