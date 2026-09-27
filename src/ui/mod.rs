@@ -54,9 +54,9 @@ pub(super) use tracing::{info, warn};
 
 pub(super) use crate::app::{
     AppProblem, AuthManager, AuthProblem, AuthState, BoardSnapshot, CreateProblem, DownloadKind,
-    DownloadState, Downloads, LoadState, ManifestState, Notice, NoticeKind, PublishProblem,
-    PushOutcome, ReleaseBoard, ReleaseFacts, RepositoryList, RepositoryListState, RunActionProblem,
-    RunDetail, RunProblem, SaveProblem, Status, Workspace, WorkspaceTab, notice_for,
+    DownloadState, Downloads, LoadState, ManifestState, Notice, NoticeKind, PushOutcome,
+    ReleaseBoard, ReleaseFacts, RepositoryList, RepositoryListState, RunActionProblem, RunDetail,
+    RunProblem, SaveProblem, Status, TagProblem, Workspace, WorkspaceTab, notice_for,
 };
 pub(super) use crate::app_info::AppInfo;
 pub(super) use crate::github::GitHubGateway;
@@ -67,7 +67,7 @@ pub(super) use crate::github::{
     Workflow, WorkflowRun, filter_log_lines, filter_repositories, filter_runs,
 };
 pub(super) use crate::labels;
-pub(super) use crate::release::{CHANNELS, ChannelPointer};
+pub(super) use crate::release::CHANNELS;
 pub(super) use crate::release_template;
 pub(super) use crate::runtime::TokioRuntime;
 pub(super) use crate::store::Store;
@@ -129,15 +129,23 @@ struct AppView {
     board: Arc<Mutex<ReleaseBoard>>,
     /// The board, as the drawer renders it.
     board_view: BoardSnapshot,
-    board_version: Entity<InputState>,
-    board_target: Entity<SelectState<SearchableVec<SharedString>>>,
-    board_target_options: Vec<SharedString>,
+    /// 建 tag 用的：仓库的分支，和这条分支上挑中的提交。
+    board_branches: Vec<String>,
+    /// 分支读过一次就记着；换仓库才重来。
+    board_branches_loaded: bool,
+    board_branch: Entity<SelectState<SearchableVec<SharedString>>>,
+    board_branch_options: Vec<SharedString>,
+    /// 提交是跟着分支读的：这个记着"已经为哪条分支读过提交"。
+    board_branch_read: Option<String>,
+    /// 要建的 tag：就是通道名（lts / latest / dogfood），默认第一个。
+    board_version: Entity<SelectState<SearchableVec<SharedString>>>,
+    board_commit: Entity<SelectState<SearchableVec<SharedString>>>,
+    /// 读取到的提交，和下拉的选项一一对应。
+    board_commits: Vec<CommitSummary>,
+    /// 下拉里该有哪些选项；变了才推给 Select。
+    board_commit_options: Vec<SharedString>,
     /// 三个事实：正在看的这次运行产出了什么。
     release_facts: Option<ReleaseFacts>,
-    /// 清单编辑器：正在改的清单文本。
-    editing_manifest: bool,
-    manifest_editor: Entity<EditorState>,
-    manifest_editor_text: Option<String>,
     runtime: TokioRuntime,
     auth: AuthState,
     copied: bool,
@@ -313,11 +321,30 @@ impl AppView {
             state.set_placeholder(labels::LOGS_SEARCH_PLACEHOLDER, window, cx);
             state
         });
-        let board_version = cx.new(|cx| draft_input(window, cx, labels::BOARD_VERSION_HINT));
-        let manifest_editor = cx.new(|cx| yaml_editor::yaml_editor_state(window, cx));
-        let board_target = cx.new(|cx| {
+        let board_branch = cx.new(|cx| {
             SelectState::new(
                 SearchableVec::<SharedString>::new(Vec::new()),
+                None,
+                window,
+                cx,
+            )
+        });
+        let board_commit = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::<SharedString>::new(Vec::new()),
+                None,
+                window,
+                cx,
+            )
+        });
+        // 版本下拉里放的就是三个通道 tag，默认第一个（lts）。
+        let board_version = cx.new(|cx| {
+            let tags = crate::release::CHANNELS
+                .iter()
+                .map(|tag| SharedString::from(*tag))
+                .collect::<Vec<_>>();
+            SelectState::new(
+                SearchableVec::new(tags),
                 Some(IndexPath::new(0)),
                 window,
                 cx,
@@ -382,13 +409,16 @@ impl AppView {
             workspace,
             board,
             board_view: BoardSnapshot::default(),
+            board_branch,
+            board_branch_options: Vec::new(),
+            board_branch_read: None,
+            board_branches: Vec::new(),
+            board_branches_loaded: false,
             board_version,
-            board_target,
-            board_target_options: Vec::new(),
+            board_commit,
+            board_commits: Vec::new(),
+            board_commit_options: Vec::new(),
             release_facts: None,
-            editing_manifest: false,
-            manifest_editor,
-            manifest_editor_text: None,
             runtime,
             auth: AuthState::LoggedOut { notice: None },
             copied: false,

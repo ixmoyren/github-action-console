@@ -51,7 +51,7 @@ Feature: multi-platform-release
 
 ### 模型
 
-- **发布版本**由 git tag 标识（`v1.4.0`、`v1.5.0-rc1`），不要求对应 GitHub Release 已存在；通道 **不是** tag 的别名。
+- **发布版本**由 git tag 标识（`v1.4.0`、`v1.5.0-rc1`），不要求对应 GitHub Release 已存在。 **通道（lts / latest / dogfood）也是 tag**（ADR-0007）：它们是移动的 tag，"通道指向哪次构建"就是"这个 tag 现在指着哪个提交"；版本号则取自代码（tag 名像版本才当版本用）。
 - **发布目标** = 平台 × 架构 × 分发方式，取值由发布清单声明（本演示：`web-arm`、`web-intel`、`windows`、`mas`，外加演示用的 `linux-tar`）。
 - **打包配置** = 要触发的 workflow 标识 + inputs 模板；多个发布目标可以复用同一份打包配置，也可以各用一份。
 - **通道指针** 以 (发布目标, 通道) 为键指向发布版本（ADR-0005），存储沿用 ADR-0003：SQLite 存指针，清单存定义。

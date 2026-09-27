@@ -122,6 +122,37 @@ impl FakeGateway {
 
 #[async_trait]
 impl GitHubGateway for FakeGateway {
+    async fn branches(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+    ) -> Result<Vec<String>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn branch_commits(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _branch: &str,
+        _limit: u8,
+    ) -> Result<Vec<github_action_console::github::CommitSummary>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn create_tag(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        _tag: &str,
+        _sha: &str,
+    ) -> Result<(), GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
     async fn start_device_flow(&self, _client_id: &str) -> Result<DeviceFlowStart, GatewayError> {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }

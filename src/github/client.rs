@@ -298,6 +298,76 @@ impl GitHubGateway for OctocrabGateway {
         Ok(())
     }
 
+    async fn branch_commits(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        branch: &str,
+        limit: u8,
+    ) -> Result<Vec<CommitSummary>, GatewayError> {
+        let crab = user_client(token)?;
+        let page = crab
+            .repos(owner, repository)
+            .list_commits()
+            .sha(branch.to_owned())
+            .per_page(limit)
+            .send()
+            .await
+            .map_err(map_error)?;
+        Ok(page.items.into_iter().map(map_commit).collect())
+    }
+
+    async fn branches(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+    ) -> Result<Vec<String>, GatewayError> {
+        let crab = user_client(token)?;
+        // 一页 100 条：控制台要的是"这个仓库有哪些分支"，不是把大仓库翻完。
+        let page = crab
+            .repos(owner, repository)
+            .list_branches()
+            .per_page(100u8)
+            .send()
+            .await
+            .map_err(map_error)?;
+        Ok(page.items.into_iter().map(|branch| branch.name).collect())
+    }
+
+    async fn create_tag(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        tag: &str,
+        sha: &str,
+    ) -> Result<(), GatewayError> {
+        let crab = user_client(token)?;
+        let reference = octocrab::params::repos::Reference::Tag(tag.to_owned());
+        match crab
+            .repos(owner, repository)
+            .create_ref(&reference, sha.to_owned())
+            .await
+        {
+            Ok(_) => Ok(()),
+            // 已经有一个同名 tag：通道 tag 是移动的，把它挪到这个提交上。
+            Err(octocrab::Error::GitHub { source, .. })
+                if source.status_code == http::StatusCode::UNPROCESSABLE_ENTITY =>
+            {
+                crab.repos(owner, repository)
+                    .update_ref(&reference, sha.to_owned())
+                    .force(true)
+                    .send()
+                    .await
+                    .map_err(map_error)?;
+                Ok(())
+            }
+            Err(error) => Err(map_error(error)),
+        }
+    }
+
     async fn open_pull_request(
         &self,
         token: &SecretToken,
@@ -620,26 +690,29 @@ async fn latest_commit(crab: &Octocrab, full_name: &str) -> Option<CommitSummary
         }
     };
 
-    page.items.into_iter().next().map(|commit| {
-        let committed_at = commit
-            .commit
-            .author
-            .as_ref()
-            .and_then(|author| author.date)
-            .or_else(|| commit.commit.committer.as_ref().and_then(|c| c.date))
-            .map(|date| date.to_rfc3339());
-        let author = commit
-            .commit
-            .author
-            .as_ref()
-            .map(|author| author.name.clone());
-        CommitSummary {
-            message: commit.commit.message,
-            sha: commit.sha,
-            author,
-            committed_at,
-        }
-    })
+    page.items.into_iter().next().map(map_commit)
+}
+
+/// One commit, as the console shows it.
+fn map_commit(commit: octocrab::models::repos::RepoCommit) -> CommitSummary {
+    let committed_at = commit
+        .commit
+        .author
+        .as_ref()
+        .and_then(|author| author.date)
+        .or_else(|| commit.commit.committer.as_ref().and_then(|c| c.date))
+        .map(|date| date.to_rfc3339());
+    let author = commit
+        .commit
+        .author
+        .as_ref()
+        .map(|author| author.name.clone());
+    CommitSummary {
+        message: commit.commit.message,
+        sha: commit.sha,
+        author,
+        committed_at,
+    }
 }
 
 fn map_run(run: octocrab::models::workflows::Run) -> WorkflowRun {

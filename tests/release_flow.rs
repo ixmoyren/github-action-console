@@ -6,12 +6,14 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use github_action_console::app::{
-    AppProblem, ManifestState, PublishProblem, ReleaseBoard, TriggerProblem, version_covers_target,
+    AppProblem, ManifestState, PublishProblem, ReleaseBoard, TagProblem, TriggerProblem,
+    version_covers_target,
 };
 use github_action_console::github::{
-    Account, BuildArtifact, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart, FileContents,
-    FileWrite, GatewayError, GitHubGateway, Job, PullRequest, RateLimit, ReleaseAsset,
-    RepositoryPage, RepositorySort, RunStatus, SecretToken, Workflow, WorkflowRun, WorkflowRunPage,
+    Account, BuildArtifact, CommitSummary, DeviceFlowHandle, DeviceFlowPoll, DeviceFlowStart,
+    FileContents, FileWrite, GatewayError, GitHubGateway, Job, PullRequest, RateLimit,
+    ReleaseAsset, RepositoryPage, RepositorySort, RunStatus, SecretToken, Workflow, WorkflowRun,
+    WorkflowRunPage,
 };
 use github_action_console::release::{CHANNELS, ReleaseState};
 use github_action_console::store::Store;
@@ -34,6 +36,12 @@ struct FakeGateway {
     writes: Mutex<Vec<FileWrite>>,
     branches: Mutex<Vec<(String, String)>>,
     pulls: Mutex<Vec<(String, String, String)>>,
+    commits: Mutex<VecDeque<Result<Vec<CommitSummary>, GatewayError>>>,
+    commit_reads: Mutex<Vec<(String, u8)>>,
+    tags: Mutex<Vec<(String, String)>>,
+    tag_results: Mutex<VecDeque<Result<(), GatewayError>>>,
+    jobs: Mutex<VecDeque<Result<Vec<Job>, GatewayError>>>,
+    job_reads: Mutex<Vec<u64>>,
 }
 
 impl FakeGateway {
@@ -85,10 +93,84 @@ impl FakeGateway {
     fn pulls(&self) -> Vec<(String, String, String)> {
         self.pulls.lock().unwrap().clone()
     }
+
+    fn push_commits(&self, commits: Vec<CommitSummary>) {
+        self.commits.lock().unwrap().push_back(Ok(commits));
+    }
+
+    fn commit_reads(&self) -> Vec<(String, u8)> {
+        self.commit_reads.lock().unwrap().clone()
+    }
+
+    fn push_tag(&self, result: Result<(), GatewayError>) {
+        self.tag_results.lock().unwrap().push_back(result);
+    }
+
+    /// 打过（或移过）的 tag：(tag, sha)。
+    fn tags(&self) -> Vec<(String, String)> {
+        self.tags.lock().unwrap().clone()
+    }
+
+    fn push_jobs(&self, jobs: Vec<Job>) {
+        self.jobs.lock().unwrap().push_back(Ok(jobs));
+    }
+
+    fn job_reads(&self) -> Vec<u64> {
+        self.job_reads.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
 impl GitHubGateway for FakeGateway {
+    async fn branches(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+    ) -> Result<Vec<String>, GatewayError> {
+        Err(GatewayError::Unexpected("unused".to_owned()))
+    }
+
+    async fn branch_commits(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        branch: &str,
+        limit: u8,
+    ) -> Result<Vec<github_action_console::github::CommitSummary>, GatewayError> {
+        self.commit_reads
+            .lock()
+            .unwrap()
+            .push((branch.to_owned(), limit));
+        self.commits
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Err(GatewayError::Unexpected(
+                "no scripted commits".to_owned(),
+            )))
+    }
+
+    async fn create_tag(
+        &self,
+        _token: &SecretToken,
+        _owner: &str,
+        _repository: &str,
+        tag: &str,
+        sha: &str,
+    ) -> Result<(), GatewayError> {
+        self.tags
+            .lock()
+            .unwrap()
+            .push((tag.to_owned(), sha.to_owned()));
+        self.tag_results
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Ok(()))
+    }
+
     async fn start_device_flow(&self, _client_id: &str) -> Result<DeviceFlowStart, GatewayError> {
         Err(GatewayError::Unexpected("unused".to_owned()))
     }
@@ -247,9 +329,14 @@ impl GitHubGateway for FakeGateway {
         _token: &SecretToken,
         _owner: &str,
         _repository: &str,
-        _run_id: u64,
+        run_id: u64,
     ) -> Result<Vec<Job>, GatewayError> {
-        Err(GatewayError::Unexpected("unused".to_owned()))
+        self.job_reads.lock().unwrap().push(run_id);
+        self.jobs
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Err(GatewayError::Unexpected("no scripted jobs".to_owned())))
     }
 
     async fn job_logs(
@@ -403,6 +490,159 @@ fn run(id: u64, status: RunStatus, conclusion: Option<&str>, created_at: &str) -
         created_at: Some(created_at.to_owned()),
         html_url: None,
     }
+}
+
+/// 一个 tag push 触发的运行：`head_branch` 就是 tag 名——看板靠它认出"这个 tag 现在
+/// 指着哪次构建"。
+fn tagged_run(id: u64, tag: &str, status: RunStatus, conclusion: Option<&str>) -> WorkflowRun {
+    WorkflowRun {
+        branch: Some(tag.to_owned()),
+        event: "push".to_owned(),
+        ..run(id, status, conclusion, "2999-01-01T00:00:00Z")
+    }
+}
+
+fn commit(sha: &str, message: &str) -> CommitSummary {
+    CommitSummary {
+        message: message.to_owned(),
+        sha: sha.to_owned(),
+        author: Some("octocat".to_owned()),
+        committed_at: Some("2026-09-27T10:00:00Z".to_owned()),
+    }
+}
+
+fn job(id: u64, name: &str, status: RunStatus, conclusion: Option<&str>) -> Job {
+    Job {
+        id,
+        name: name.to_owned(),
+        status,
+        conclusion: conclusion.map(str::to_owned),
+        steps: Vec::new(),
+    }
+}
+
+/// 通道 tag 建在选中的提交上——这就是"发布到这条通道"。
+#[tokio::test]
+async fn a_channel_tag_is_created_on_the_picked_commit() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_manifest(MANIFEST);
+    gateway.push_tag(Ok(()));
+    let mut board = board().await;
+    board.load_manifest(&*gateway, &token()).await;
+
+    board
+        .create_tag(&*gateway, &token(), "latest", "abc123")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        gateway.tags(),
+        [("latest".to_owned(), "abc123".to_owned())],
+        "the tag was not pointed at the picked commit"
+    );
+}
+
+/// 建 tag 失败时说得出是网关的问题。
+#[tokio::test]
+async fn a_tag_the_gateway_refuses_is_surfaced() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_manifest(MANIFEST);
+    gateway.push_tag(Err(GatewayError::Forbidden));
+    let mut board = board().await;
+    board.load_manifest(&*gateway, &token()).await;
+
+    let outcome = board.create_tag(&*gateway, &token(), "lts", "abc123").await;
+
+    assert_eq!(outcome, Err(TagProblem::Gateway(AppProblem::Forbidden)));
+}
+
+/// 没挑提交时，先读这条分支上的提交，挑最新那个当 tag 的目标。
+#[tokio::test]
+async fn the_branch_head_answers_when_no_commit_was_picked() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_manifest(MANIFEST);
+    gateway.push_commits(vec![commit("head1", "发布 v0.2.0")]);
+    let mut board = board().await;
+    board.load_manifest(&*gateway, &token()).await;
+
+    let commits = board
+        .branch_commits(&*gateway, &token(), "main", 1)
+        .await
+        .unwrap();
+
+    assert_eq!(commits[0].sha, "head1");
+    assert_eq!(gateway.commit_reads(), [("main".to_owned(), 1)]);
+}
+
+/// 格子里的状态来自这个 tag 那次运行里属于该目标的 job。
+#[tokio::test]
+async fn a_cell_shows_the_targets_job_in_the_tags_run() {
+    let gateway = Arc::new(FakeGateway::default());
+    gateway.push_manifest(MANIFEST);
+    gateway.push_jobs(vec![
+        job(
+            1,
+            "web-arm · macos/arm64 · dmg",
+            RunStatus::Completed,
+            Some("success"),
+        ),
+        job(
+            2,
+            "windows · windows/x64 · msi",
+            RunStatus::Completed,
+            Some("failure"),
+        ),
+        job(
+            3,
+            "mas · macos/universal · pkg",
+            RunStatus::Completed,
+            Some("success"),
+        ),
+    ]);
+    let mut board = board().await;
+    board.load_manifest(&*gateway, &token()).await;
+
+    let runs = vec![tagged_run(
+        321,
+        "latest",
+        RunStatus::Completed,
+        Some("success"),
+    )];
+    // tag 那次运行的 job 还没取：视图会去取。
+    assert_eq!(board.tag_jobs_to_load(&runs), [("latest".to_owned(), 321)]);
+    board.begin_tag_jobs("latest", 321);
+    board
+        .load_tag_jobs(&*gateway, &token(), "latest", 321)
+        .await;
+    assert_eq!(gateway.job_reads(), [321]);
+    // 取过了就不用再取。
+    assert!(board.tag_jobs_to_load(&runs).is_empty());
+
+    let snapshot = board.snapshot(&runs);
+    let cell = |target: &str, tag: &str| {
+        snapshot
+            .rows
+            .iter()
+            .find(|row| row.target == target)
+            .and_then(|row| row.cells.iter().find(|cell| cell.channel == tag))
+            .cloned()
+            .unwrap_or_else(|| panic!("no cell for {target}/{tag}"))
+    };
+
+    // 成功的 job：这个通道 tag 就发布到了这个目标上。
+    let arm = cell("web-arm", "latest");
+    assert_eq!(arm.state, ReleaseState::Published);
+    assert_eq!(arm.job.as_deref(), Some("web-arm · macos/arm64 · dmg"));
+    assert_eq!(arm.run_id, Some(321));
+    // 失败的 job：这一格是失败。
+    assert_eq!(cell("windows", "latest").state, ReleaseState::Failed);
+    // 带模拟步骤的目标停在"待签名公证"。
+    assert_eq!(cell("mas", "latest").state, ReleaseState::AwaitingSigning);
+    // 这个 tag 没跑过的那条：待构建，也没有 job 和运行可看。
+    let lts = cell("web-arm", "lts");
+    assert_eq!(lts.state, ReleaseState::Todo);
+    assert!(lts.job.is_none());
+    assert!(lts.run_id.is_none());
 }
 
 #[tokio::test]

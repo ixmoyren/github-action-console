@@ -36,6 +36,11 @@ on:
   push:
     tags:
       - "v*"
+      # 通道 tag：发布看板把 lts / latest / dogfood 指到某个提交上，就是"发布到这条
+      # 通道"，所以它们也要触发这次构建。
+      - "lts"
+      - "latest"
+      - "dogfood"
 
 permissions:
   contents: write
@@ -159,13 +164,20 @@ jobs:
           for entry in entries:
               entry["binary"] = binary
 
-          # 版本号：dispatch 输入优先；tag 触发就用 tag 名；其余情况用包自己的版本。
-          # 分支名不是版本号——最初的写法把 main 当版本，WiX 直接不接受。
+          # 版本号：dispatch 输入优先；版本 tag（v1.2.3 / 1.2.3）就用 tag 名；其余
+          # 情况用包自己的版本。
+          #
+          # 分支名不算版本（最初的写法把 main 当版本，WiX 直接不接受）；通道 tag
+          # （lts / latest / dogfood）也不算——它说的是"哪条通道"，版本得看代码。
+          def looks_like_version(value):
+              return bool(re.match(r"^v?\d", value))
+
           version = (os.environ.get("VERSION") or "").strip()
-          if not version:
-              if os.environ.get("TAG_BUILD") == "true":
-                  version = os.environ.get("REF_NAME") or ""
-              version = version or package.get("version") or "0.0.0"
+          if not version and os.environ.get("TAG_BUILD") == "true":
+              tag = os.environ.get("REF_NAME") or ""
+              if looks_like_version(tag):
+                  version = tag
+          version = version or package.get("version") or "0.0.0"
 
           def windows_version(value):
               # Windows Installer 的版本必须是 x.x.x.x（每段 0..65534）：把 v 前缀、
@@ -358,10 +370,12 @@ jobs:
       - name: Attach assets to the release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.plan.outputs.version }}
+          # 挂哪个 Release：tag 触发就挂在这个 tag 上（通道 tag 的资产就是这条通道现在
+          # 指的那次构建），手动触发才用版本号当 tag。文件名字里的版本号另说。
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || needs.plan.outputs.version }}
         run: |
           set -euo pipefail
-          gh release view "$VERSION" >/dev/null 2>&1 || gh release create "$VERSION" \
-            --title "$VERSION" --notes "由 Release target workflow 构建。签名、公证与商店提交标注为模拟。"
-          gh release upload "$VERSION" dist/* --clobber
-          gh release view "$VERSION" --json assets --jq '.assets[].name'
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" --notes "由 Release target workflow 构建。签名、公证与商店提交标注为模拟。"
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name'

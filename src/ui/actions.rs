@@ -19,10 +19,10 @@ const DEBOUNCE: Duration = Duration::from_millis(3500);
 pub(crate) enum ActionKey {
     /// 左列工作流条目的运行。
     Run,
-    /// 看板格子的发布（登记通道指针）。
-    Publish,
-    /// 看板的触发构建。
-    TriggerBuild,
+    /// 看板：把某个通道 tag 指到选中的提交上。
+    TagRelease,
+    /// 看板：读一段分支上最近的提交，填「提交」下拉。
+    LoadCommits,
     /// 新建工作流表单的推送。
     PushWorkflow,
     /// 编辑器右下角的保存：工作流文件。
@@ -31,8 +31,6 @@ pub(crate) enum ActionKey {
     SaveReleaseFlow,
     /// 采用发布模板直接建一条（表单里那颗）。
     UseTemplate,
-    /// 清单编辑器的提交为 PR。
-    SubmitManifest,
     /// 仓库列表的刷新。
     RefreshRepositories,
     /// 进入某个仓库（双击不该进两次）。
@@ -52,8 +50,6 @@ pub(crate) enum ActionKey {
     NewWorkflowForm,
     /// 新建发布流 / 取消新建发布流的开关。
     ReleaseFlow,
-    /// 看板里清单编辑器的开关。
-    ManifestEditor,
 }
 
 impl AppView {

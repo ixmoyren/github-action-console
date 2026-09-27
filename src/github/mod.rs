@@ -420,6 +420,37 @@ pub trait GitHubGateway: Send + Sync {
         from: &str,
     ) -> Result<(), GatewayError>;
 
+    /// 一个分支上最近的提交（新的在前）——在指定分支的某个 commit 上建 tag 时用。
+    async fn branch_commits(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        branch: &str,
+        limit: u8,
+    ) -> Result<Vec<CommitSummary>, GatewayError>;
+
+    /// 仓库现在有哪些分支——建 tag 时先挑分支。
+    async fn branches(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+    ) -> Result<Vec<String>, GatewayError>;
+
+    /// 把 tag 指到 `sha` 上；tag 已经存在就移过去。
+    ///
+    /// 通道 tag（lts / latest / dogfood）天生是移动的：一个通道指向哪次构建，
+    /// 就是它现在指向哪个提交。
+    async fn create_tag(
+        &self,
+        token: &SecretToken,
+        owner: &str,
+        repository: &str,
+        tag: &str,
+        sha: &str,
+    ) -> Result<(), GatewayError>;
+
     /// Open a pull request, returning its number.
     async fn open_pull_request(
         &self,

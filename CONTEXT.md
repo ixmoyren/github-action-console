@@ -10,10 +10,11 @@
 由 git tag 标识的版本身份，不要求对应的 GitHub Release 已存在。 _Avoid_: 版本号, release, build
 
 **通道 (Channel)**:
-版本推进的轨道（LTS / latest / dogfood），当前指向一个发布版本。 _Avoid_: 轨道, 分发渠道, 分支
+版本推进的轨道（LTS / latest / dogfood），在仓库里就是同名 git tag：tag 指向哪个提交，
+这条通道现在就是哪次构建。移动 tag 是正常用法。 _Avoid_: 轨道, 分发渠道, 分支
 
-**通道指针 (Channel pointer)**:
-发布目标与通道的组合到它所指向的发布版本的存储映射。 _Avoid_: 当前版本, latest
+**通道 tag (Channel tag)**:
+见「通道」——`lts` / `latest` / `dogfood` 本身就是 tag，控制台不另存一份指针。 _Avoid_: 通道指针
 
 **分发目标 (Distribution target)**:
 产物以什么形式交付：GitHub Releases、Mac App Store、直接下载。 _Avoid_: 分发渠道, 渠道

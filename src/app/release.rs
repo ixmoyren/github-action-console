@@ -8,16 +8,18 @@
 use tracing::{debug, info, warn};
 
 use crate::github::{
-    FileWrite, GatewayError, GitHubGateway, PullRequest, ReleaseAsset, SecretToken, WorkflowRun,
-    split_full_name,
+    CommitSummary, FileWrite, GatewayError, GitHubGateway, Job, PullRequest, ReleaseAsset,
+    SecretToken, WorkflowRun, split_full_name,
 };
 use crate::release::{
     BuildDispatch, CHANNELS, ChannelPointer, MANIFEST_PATH, ManifestProblem, ReleaseManifest,
-    ReleaseState, ReleaseTarget, parse_manifest,
+    ReleaseState, ReleaseTarget, parse_manifest, release_state_for_job,
 };
 use crate::store::Store;
 
 use super::repositories::AppProblem;
+
+use super::LoadState;
 
 /// How far the manifest read has got.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -57,6 +59,26 @@ pub enum PublishProblem {
     /// The console could not record the new pointer.
     Store,
     Gateway(AppProblem),
+}
+
+/// Why a channel tag could not be created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagProblem {
+    NoRepository,
+    /// 分支上读不到提交，也就没得可指。
+    NoCommit,
+    Gateway(AppProblem),
+}
+
+/// 一个通道 tag 这一次运行取回来的 job。
+///
+/// 看板格子里的状态来自它：tag 推上去触发的那个 run，按 job 名认领各个发布目标。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagJobs {
+    /// 取的是哪个 run 的 job——run 换了就要重取。
+    pub run_id: u64,
+    pub state: LoadState,
+    pub jobs: Vec<Job>,
 }
 
 /// Why a manifest could not be sent as a pull request.
@@ -104,6 +126,8 @@ pub struct ReleaseBoard {
     manifest_problem: Option<ManifestProblem>,
     pointers: Vec<ChannelPointer>,
     dispatches: Vec<BuildDispatch>,
+    /// 每个通道 tag 那次运行取回来的 job，按 tag 名存。
+    tag_jobs: std::collections::BTreeMap<String, TagJobs>,
 }
 
 impl ReleaseBoard {
@@ -117,6 +141,7 @@ impl ReleaseBoard {
             manifest_problem: None,
             pointers: Vec::new(),
             dispatches: Vec::new(),
+            tag_jobs: std::collections::BTreeMap::new(),
         }
     }
 
@@ -133,6 +158,7 @@ impl ReleaseBoard {
             self.manifest_problem = None;
             self.pointers.clear();
             self.dispatches.clear();
+            self.tag_jobs.clear();
             self.repository = Some(repository.to_owned());
         }
     }
@@ -432,6 +458,145 @@ impl ReleaseBoard {
         }
     }
 
+    /// 把通道 tag 指到 `sha` 上；tag 已经存在就移过去。
+    ///
+    /// 这一步就是"推送到 repo"：ref 在 GitHub 那边建好，推 tag 触发的发布工作流随
+    /// 即开始跑。
+    pub async fn create_tag(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        tag: &str,
+        sha: &str,
+    ) -> Result<(), TagProblem> {
+        let Some((owner, repository)) = self.parts() else {
+            return Err(TagProblem::NoRepository);
+        };
+        info!(%tag, %sha, "pointing a channel tag at a commit");
+        gateway
+            .create_tag(token, &owner, &repository, tag, sha)
+            .await
+            .map_err(|error| TagProblem::Gateway(AppProblem::from_gateway(&error)))
+    }
+
+    /// 一条分支上最近的提交：界面拿它填「提交」下拉。
+    pub async fn branch_commits(
+        &self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        branch: &str,
+        limit: u8,
+    ) -> Result<Vec<CommitSummary>, TagProblem> {
+        let Some((owner, repository)) = self.parts() else {
+            return Err(TagProblem::NoRepository);
+        };
+        gateway
+            .branch_commits(token, &owner, &repository, branch, limit)
+            .await
+            .map_err(|error| TagProblem::Gateway(AppProblem::from_gateway(&error)))
+    }
+
+    /// 仓库现在有哪些分支：界面拿它填「分支」下拉。
+    pub async fn branches(
+        &self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+    ) -> Result<Vec<String>, TagProblem> {
+        let Some((owner, repository)) = self.parts() else {
+            return Err(TagProblem::NoRepository);
+        };
+        gateway
+            .branches(token, &owner, &repository)
+            .await
+            .map_err(|error| TagProblem::Gateway(AppProblem::from_gateway(&error)))
+    }
+
+    /// 哪些通道 tag 的 job 还没取（或者取的还是上一个 run）。
+    ///
+    /// 视图拿它去问 GitHub；问回来之后格子才有状态可说。
+    pub fn tag_jobs_to_load(&self, runs: &[WorkflowRun]) -> Vec<(String, u64)> {
+        let mut wanted = Vec::new();
+        for tag in CHANNELS {
+            let Some(run) = tag_run(runs, tag) else {
+                continue;
+            };
+            match self.tag_jobs.get(tag) {
+                // 这个 run 的 job 已经取过了。
+                Some(jobs) if jobs.run_id == run.id => {}
+                _ => wanted.push((tag.to_owned(), run.id)),
+            }
+        }
+        wanted
+    }
+
+    /// 记下"这个 tag 那次运行的 job 正在取"，免得每一帧都要一遍。
+    pub fn begin_tag_jobs(&mut self, tag: &str, run_id: u64) {
+        self.tag_jobs.insert(
+            tag.to_owned(),
+            TagJobs {
+                run_id,
+                state: LoadState::Loading,
+                jobs: Vec::new(),
+            },
+        );
+    }
+
+    /// 取一个通道 tag 那次运行里的 job。
+    pub async fn load_tag_jobs(
+        &mut self,
+        gateway: &dyn GitHubGateway,
+        token: &SecretToken,
+        tag: &str,
+        run_id: u64,
+    ) {
+        let Some((owner, repository)) = self.parts() else {
+            return;
+        };
+        match gateway.list_jobs(token, &owner, &repository, run_id).await {
+            Ok(jobs) => {
+                info!(%tag, run = run_id, count = jobs.len(), "tag run jobs read");
+                self.tag_jobs.insert(
+                    tag.to_owned(),
+                    TagJobs {
+                        run_id,
+                        state: LoadState::Loaded,
+                        jobs,
+                    },
+                );
+            }
+            Err(error) => {
+                warn!(%tag, run = run_id, %error, "could not read the tag run's jobs");
+                self.tag_jobs.insert(
+                    tag.to_owned(),
+                    TagJobs {
+                        run_id,
+                        state: LoadState::Failed(AppProblem::from_gateway(&error)),
+                        jobs: Vec::new(),
+                    },
+                );
+            }
+        }
+    }
+
+    /// 一个格子：这个 tag 那次运行里属于这个目标的那个 job 走到哪儿了。
+    pub fn tag_cell(&self, target: &ReleaseTarget, tag: &str, runs: &[WorkflowRun]) -> BoardCell {
+        let run = tag_run(runs, tag);
+        let jobs = run.and_then(|run| self.tag_jobs.get(tag).filter(|jobs| jobs.run_id == run.id));
+        let job = jobs.and_then(|jobs| job_for_target(&jobs.jobs, &target.name));
+        let state = match jobs {
+            Some(jobs) if jobs.state == LoadState::Loaded => release_state_for_job(target, job),
+            // job 还在路上：先说"构建中"，别把"还没取回来"当成"没构建"。
+            Some(_) => ReleaseState::Building,
+            None => ReleaseState::Todo,
+        };
+        BoardCell {
+            channel: tag.to_owned(),
+            job: job.map(|job| job.name.clone()),
+            state,
+            run_id: run.map(|run| run.id),
+        }
+    }
+
     fn parts(&self) -> Option<(String, String)> {
         self.repository.as_deref().and_then(split_full_name)
     }
@@ -465,18 +630,48 @@ pub struct BoardRow {
     pub cells: Vec<BoardCell>,
 }
 
+/// 看板的一格：一个发布目标在一个通道 tag 上的样子。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardCell {
+    /// 这一列是哪个通道 tag。
     pub channel: String,
-    /// The version the channel points at for this target, if any.
-    pub version: Option<String>,
+    /// 这个 tag 那次运行里属于这一行的那个 job（模板把它命名成 `目标名 · …`）。
+    pub job: Option<String>,
     pub state: ReleaseState,
-    /// The run this cell's newest dispatch became, when the console has seen it.
+    /// 这个 tag 触发的运行，控制台认得出就带上——点一下就能去看日志。
     pub run_id: Option<u64>,
 }
 
+/// 一个通道 tag 触发的最近一次运行。
+///
+/// tag push 触发的运行，`head_branch` 就是 tag 名——这就是"这个 tag 现在指着哪次
+/// 构建"。
+pub fn tag_run<'a>(runs: &'a [WorkflowRun], tag: &str) -> Option<&'a WorkflowRun> {
+    runs.iter()
+        .filter(|run| run.branch.as_deref() == Some(tag))
+        .max_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        })
+}
+
+/// 这次运行里属于某个发布目标的 job。
+///
+/// 模板把 job 命名成 `目标名 · 平台/架构 · 产物`，所以前缀就是发布目标名。
+pub fn job_for_target<'a>(jobs: &'a [Job], target: &str) -> Option<&'a Job> {
+    jobs.iter()
+        .find(|job| job_name_target(&job.name) == Some(target))
+}
+
+/// job 名里的发布目标那一段。
+fn job_name_target(name: &str) -> Option<&str> {
+    name.split_once(" · ").map(|(target, _)| target.trim())
+}
+
 impl ReleaseBoard {
-    /// Lay the manifest, the pointers and the newest dispatches out as a board.
+    /// Lay the manifest out as a board: one row per release target, one column per
+    /// channel tag, and each cell is that target's job in the tag's run.
     pub fn snapshot(&self, runs: &[WorkflowRun]) -> BoardSnapshot {
         let rows = match self.manifest() {
             Some(manifest) => manifest
@@ -487,15 +682,7 @@ impl ReleaseBoard {
                     simulated: target.is_simulated(),
                     cells: CHANNELS
                         .iter()
-                        .map(|channel| {
-                            let cell = self.cell(target, channel, runs);
-                            BoardCell {
-                                channel: (*channel).to_owned(),
-                                version: cell.pointer.map(|pointer| pointer.version),
-                                state: cell.state,
-                                run_id: cell.run_id,
-                            }
-                        })
+                        .map(|tag| self.tag_cell(target, tag, runs))
                         .collect(),
                 })
                 .collect(),

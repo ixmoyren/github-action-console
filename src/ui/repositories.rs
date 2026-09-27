@@ -279,6 +279,12 @@ impl AppView {
                 this.runs_has_more = false;
                 this.expanded_run = None;
                 this.run_artifacts.clear();
+                this.board_branches.clear();
+                this.board_branch_options.clear();
+                this.board_branches_loaded = false;
+                this.board_branch_read = None;
+                this.board_commits.clear();
+                this.board_commit_options.clear();
                 this.refresh_run_table(cx);
                 this.workspace_tab = WorkspaceTab::Workflows;
                 cx.notify();

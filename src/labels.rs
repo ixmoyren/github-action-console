@@ -63,32 +63,27 @@ pub const WORKSPACE_NEW_RELEASE_FLOW: &str = "新建发布流";
 pub const WORKSPACE_CANCEL_RELEASE_FLOW: &str = "取消新建发布流";
 
 pub const BOARD_VERSION: &str = "版本";
-pub const BOARD_VERSION_HINT: &str = "例如 v0.1.0";
+pub const BOARD_BRANCH: &str = "分支";
+/// 看板表格第一列的标题（行是发布目标）。
 pub const BOARD_TARGET: &str = "发布目标";
-pub const BOARD_TRIGGER: &str = "触发构建";
-pub const BOARD_PUBLISH: &str = "发布";
+pub const BOARD_COMMIT: &str = "提交";
+pub const BOARD_TAG_CREATE: &str = "创建";
+pub const BOARD_TAG_HINT: &str = "把这个通道 tag 指到选中的提交上；推上去就会触发发布工作流。";
+pub const BOARD_TAG_CREATED: &str = "已把通道 tag 指到这个提交。";
+pub const BOARD_TAG_FAILED: &str = "建 tag 没成，请重试。";
+pub const BOARD_NO_BRANCH: &str = "先选一个分支。";
+pub const BOARD_NO_COMMITS: &str = "这条分支上没有读到提交。";
+pub const BOARD_NO_COMMIT: &str = "这条分支上还没有提交，没法打 tag。";
+pub const BOARD_RUN_OPEN: &str = "查看运行";
+pub const BOARD_NO_RUN: &str = "还没有这次 tag 的运行";
+pub const BOARD_NO_JOB: &str = "这次运行没有这个目标的 job";
 pub const BOARD_SIMULATED: &str = "模拟";
 pub const BOARD_MISSING: &str = "该仓库还没有发布清单（.github/release-console.yml）。";
 pub const BOARD_INVALID: &str = "发布清单读不出来";
 pub const BOARD_LOADING: &str = "正在读取发布清单…";
 pub const BOARD_EMPTY_CELL: &str = "—";
-pub const BOARD_TRIGGERED: &str = "已触发构建，等待 runner。";
-pub const BOARD_TRIGGER_NO_MANIFEST: &str = "该仓库没有可用的发布清单，无法触发构建。";
-pub const BOARD_TRIGGER_UNKNOWN_TARGET: &str = "清单里没有这个发布目标。";
-pub const BOARD_PUBLISHED: &str = "已把该版本登记到这条通道。";
-pub const BOARD_PUBLISH_NEEDS_ASSETS: &str =
-    "该版本还没有这个目标的发布资产，不能登记发布（构建成功不等于已发布）。";
-pub const BOARD_PUBLISH_UNKNOWN_TARGET: &str = "清单里没有这个发布目标。";
 pub const BOARD_NO_VERSION: &str = "先在上面填一个版本。";
 pub const BOARD_STORE_FAILED: &str = "本地记录失败，请重试。";
-pub const BOARD_MANIFEST_EDIT: &str = "编辑清单";
-pub const BOARD_MANIFEST_CANCEL: &str = "取消编辑";
-pub const BOARD_MANIFEST_TITLE: &str = "发布清单";
-pub const BOARD_MANIFEST_SUBMIT: &str = "提交为 PR";
-pub const BOARD_MANIFEST_NO_TEXT: &str = "还没有读到清单，先刷新再看。";
-pub const BOARD_MANIFEST_NO_BASE: &str = "不知道默认分支，无法提交。";
-pub const BOARD_MANIFEST_NO_REPOSITORY: &str = "没有选中的仓库，无法提交。";
-pub const BOARD_MANIFEST_SUBMITTED: &str = "已提交为 PR";
 pub const WORKSPACE_COMING_SOON: &str = "即将推出。";
 
 pub const PROBLEM_RATE_LIMITED: &str = "已触发 GitHub 限流，请稍后重试。";

@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::github::{WorkflowRun, any_running};
+use crate::github::{Job, WorkflowRun, any_running};
 
 /// Where a repository's release manifest lives.
 pub const MANIFEST_PATH: &str = ".github/release-console.yml";
@@ -566,6 +566,28 @@ pub fn release_state(
         Some("cancelled") | Some("skipped") => ReleaseState::Cancelled,
         Some("success") if target.is_simulated() => ReleaseState::AwaitingSigning,
         Some("success") => ReleaseState::ReadyToPublish,
+        // Finished without a conclusion the console knows: treat it as built.
+        Some(_) => ReleaseState::Built,
+        None => ReleaseState::Building,
+    }
+}
+
+/// 一个目标在某个通道 tag 上的状态：看这次运行里属于它的那个 job 走到哪儿了。
+///
+/// 通道 tag 本身就是发布记录——把 `latest` 指到一个提交上、它的 job 也过了，就是
+/// "已发布到 latest"。带模拟步骤的目标仍旧停在"待签名公证"。
+pub fn release_state_for_job(target: &ReleaseTarget, job: Option<&Job>) -> ReleaseState {
+    let Some(job) = job else {
+        return ReleaseState::Todo;
+    };
+    if job.status.is_running() {
+        return ReleaseState::Building;
+    }
+    match job.conclusion.as_deref() {
+        Some("failure") | Some("timed_out") | Some("action_required") => ReleaseState::Failed,
+        Some("cancelled") | Some("skipped") => ReleaseState::Cancelled,
+        Some("success") if target.is_simulated() => ReleaseState::AwaitingSigning,
+        Some("success") => ReleaseState::Published,
         // Finished without a conclusion the console knows: treat it as built.
         Some(_) => ReleaseState::Built,
         None => ReleaseState::Building,
