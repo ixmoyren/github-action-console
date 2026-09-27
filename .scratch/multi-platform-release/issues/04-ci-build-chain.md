@@ -42,3 +42,11 @@
 是 1252。按 light 自己在错误里给的选项，给 `<Product>` 加 `Codepage="936"`（简体中文 GBK）。
 代价：库里所有字符串都要落在 936 里，以后往 wxs 里加文案别再塞 GBK 之外的字（emoji 就不行）。
 顺带记一笔：`$LASTEXITCODE` 那道自检这次派上用场了——不然 light 失败还是会被"msi built"盖过去。
+
+**2026-09-27 同一关，第二改**：`Product/@Codepage="936"` 没解决问题——下一次触发照样是
+`LGHT0311`，而且 light 报的还是 `'1252'`，说明它没改到库的代码页（Product 的 Codepage 在这个
+版本/这条命令下不起作用）。不再猜第二次：把唯一进 msi 的中文串——`MajorUpgrade` 的
+`DowngradeErrorMessage`——换成英文 `A newer version is already installed.`。安装包本来其余
+全英文（产品名、厂商、目录），`Language` 是 1033，这样最一致，而且 ASCII 在任何代码页里都放得下，
+这一关不会再因为编码挂。验证过：wxs 里所有属性值都在 cp1252 内、非 ASCII 串为 0。
+要中文提示就得走 WixLocalization（zh-CN + Codepage）那条本地化路，另开一票。
