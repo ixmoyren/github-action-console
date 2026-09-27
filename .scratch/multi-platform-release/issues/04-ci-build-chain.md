@@ -54,9 +54,16 @@
 **2026-09-27 msi 打包第三关：ICE80（32 位组件装进 64 位目录）**。编码修好之后 light 终于
 走到校验，报了新错：`LGHT0204 : ICE80: This 32BitComponent ConsoleExe uses 64BitDirectory
 INSTALLFOLDER`（main.wxs (32)）。原因：组件没说自己是多少位，默认按 32 位算，而它装进的是
-`ProgramFiles64Folder`。改法按包的粒度来：`<Package ... Platform="x64" />`——这个包就该是
-64 位的（exe 是 `x86_64-pc-windows-msvc`，目录是 64 位的 Program Files），WiX 会把组件的
-默认位数跟着包走。`InstallerVersion="500"` 本来就在，64 位包要的正是这一档。
+`ProgramFiles64Folder`。
+
+**第三关，第二改**：第一次只给包加了 `<Package ... Platform="x64" />`，以为组件的位数会跟着包走
+——没有。最新提交上重新触发，同一个 ICE80 照样报（错误行号从 32 挪到 41，说明跑的确实是新文件，
+只是没修对）。这个版本里 **包的位数不会传到组件上**，位数得写在组件自己身上：
+`<Component Id="ConsoleExe" Guid="*" Win64="yes">`。两个属性各管一件事，都留着：`Platform` 是
+包的平台（摘要里的 Intel64），`Win64` 是这个组件按 64 位装。`InstallerVersion="500"` 本来就在，
+64 位包要的正是这一档。
 
 记一笔现象：这三关是 **一个接一个露出来的**——编码错在链接阶段（LGHT0311），过不了就没机会
 跑到校验阶段（ICE80）。所以每修好一处，下一处的错误码都会变，那是进度而不是新问题。
+教训再加一条：ICE 报错指向哪个对象（这里是"ConsoleExe 这个组件"），就把属性加在哪个对象上；
+别指望包级的设置替你兜底。

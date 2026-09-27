@@ -11,9 +11,9 @@
   拒绝。给 Product 加 Codepage="936" 试过一次，没用——它没改到库的代码页（light 报的
   还是 '1252'）。要让安装包说中文，得走 WixLocalization（zh-CN + Codepage）那条路。
 
-  Package/@Platform="x64"：装的 exe 是 x86_64，进的是 64 位的 Program Files，包不说
-  自己是 64 位的话组件默认按 32 位算，light 的校验会以 ICE80 拒（32BitComponent 用了
-  64BitDirectory）。
+  位数要说两处：Package/@Platform="x64" 说这个包是 64 位的（摘要里的平台），组件则要
+  自己写 Win64="yes"——只加 Platform 试过了，light 照样以 ICE80 拒
+  （32BitComponent 用了 64BitDirectory），这个版本不会把包的位数传到组件上。
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product
@@ -38,7 +38,7 @@
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="GitHub Action Console">
-          <Component Id="ConsoleExe" Guid="*">
+          <Component Id="ConsoleExe" Guid="*" Win64="yes">
             <File
               Id="ConsoleExeFile"
               Source="$(var.SourceDir)\$(var.ExeName)"
