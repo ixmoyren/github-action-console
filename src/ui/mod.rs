@@ -40,6 +40,7 @@ pub(super) use gpui_kit::component::Sizable as _;
 pub(super) use gpui_kit::component::button::{Button, ButtonVariants};
 pub(super) use gpui_kit::component::checkbox::Checkbox;
 pub(super) use gpui_kit::component::input::{Editor, EditorState, Input};
+pub(super) use gpui_kit::component::notification::{Notification, NotificationList};
 pub(super) use gpui_kit::component::scroll::ScrollableElement as _;
 pub(super) use gpui_kit::component::select::{SearchableVec, Select, SelectState};
 pub(super) use gpui_kit::component::table::{Column, TableState};
@@ -227,6 +228,13 @@ struct AppView {
     artifacts: Vec<BuildArtifact>,
     artifacts_state: LoadState,
     download_state: DownloadState,
+    /// 下载完成之类的事弹一下就走：这一层是提示（toast）队列，`shell` 把它画在窗口上。
+    notifications: Entity<NotificationList>,
+    /// 排队等弹的提示。异步任务里没有 window，而弹提示要 window，所以先在这儿排着，
+    /// 下一帧 render 交给通知层。
+    pending_notifications: Vec<Notification>,
+    /// 正在下的那个后台任务的把手：取消就是把它掐掉。
+    download_abort: Option<tokio::task::AbortHandle>,
     /// 运行列表里展开的那条运行，以及每条运行取回来的构建产物。
     ///
     /// 只有真有可下载的构建产物时才展开（`expanded_run`），没东西可下就不占地方。
@@ -353,6 +361,7 @@ impl AppView {
             command: draft_job_command,
         }];
         let preview_editor = cx.new(|cx| yaml_editor::yaml_editor_state(window, cx));
+        let notifications = cx.new(|cx| NotificationList::new(window, cx));
 
         let repo_view = cx.weak_entity();
         let repo_table = cx.new(move |cx| {
@@ -458,6 +467,9 @@ impl AppView {
             artifacts: Vec::new(),
             artifacts_state: LoadState::Idle,
             download_state: DownloadState::Idle,
+            notifications,
+            pending_notifications: Vec::new(),
+            download_abort: None,
             expanded_run: None,
             run_artifacts: HashMap::new(),
             in_flight: HashSet::new(),

@@ -1,6 +1,8 @@
 use super::AppView;
 use super::*;
 
+use super::downloads::download_controls;
+
 impl AppView {
     pub(super) async fn refresh_detail(
         detail: &Arc<Mutex<RunDetail>>,
@@ -363,7 +365,7 @@ impl AppView {
                 } else {
                     String::new()
                 };
-                div()
+                let mut row = div()
                     .flex()
                     .flex_row()
                     .items_center()
@@ -371,15 +373,20 @@ impl AppView {
                     .child(pickable(format!(
                         "{}｜{} B{}",
                         artifact.name, artifact.size_in_bytes, expired
-                    )))
-                    .child(
-                        Button::new(SharedString::from(format!("artifact-{}", artifact.id)))
-                            .label(labels::ARTIFACT_DOWNLOAD)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.download_artifact(artifact.clone(), cx)
-                            })),
-                    )
-                    .into_any_element()
+                    )));
+                let artifact_id = artifact.id;
+                let downloading = artifact.clone();
+                row = row.child(download_controls(
+                    &self.download_state,
+                    &DownloadKind::Artifact { artifact_id },
+                    SharedString::from(format!("artifact-{artifact_id}")),
+                    labels::ARTIFACT_DOWNLOAD,
+                    cx.listener(move |this, _, _, cx| {
+                        this.download_artifact(downloading.clone(), cx)
+                    }),
+                    cx,
+                ));
+                row.into_any_element()
             })
             .collect::<Vec<_>>();
         panel = panel.child(div().flex().flex_col().gap_2().children(artifact_rows));
@@ -443,63 +450,16 @@ impl AppView {
             }
         }
 
-        panel = panel.child(
-            Button::new("download-run-logs")
-                .label(labels::RUN_LOGS_DOWNLOAD)
-                .on_click(cx.listener(|this, _, _, cx| this.download_run_logs(cx))),
-        );
-
-        match &self.download_state {
-            DownloadState::NeedsConfirmation(pending) => {
-                let size = pending.size_in_bytes.unwrap_or_default();
-                panel = panel.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(pickable(format!(
-                            "{}（{} B）",
-                            labels::DOWNLOAD_CONFIRM_TITLE,
-                            size
-                        )))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .gap_2()
-                                .child(
-                                    Button::new("confirm-download")
-                                        .label(labels::DOWNLOAD_CONFIRM)
-                                        .primary()
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.confirm_download(cx)),
-                                        ),
-                                )
-                                .child(
-                                    Button::new("cancel-download")
-                                        .label(labels::DOWNLOAD_CANCEL)
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.cancel_download(cx)),
-                                        ),
-                                ),
-                        ),
-                );
-            }
-            DownloadState::Downloading => {
-                panel = panel.child(pickable(labels::DOWNLOADING));
-            }
-            DownloadState::Saved(path) => {
-                panel = panel.child(pickable(format!(
-                    "{}：{}",
-                    labels::DOWNLOAD_SAVED,
-                    path.display()
-                )));
-            }
-            DownloadState::Failed(problem) => {
-                panel = panel.child(Label::new(problem_text(*problem)).text_sm());
-            }
-            DownloadState::Idle => {}
-        }
+        panel = panel.child(download_controls(
+            &self.download_state,
+            &DownloadKind::RunLogs {
+                run_id: self.open_run.unwrap_or_default(),
+            },
+            SharedString::from("download-run-logs"),
+            labels::RUN_LOGS_DOWNLOAD,
+            cx.listener(|this, _, _, cx| this.download_run_logs(cx)),
+            cx,
+        ));
 
         // 整个 jobs 页都在一个可滚动容器里：job 卡片、步骤编辑器、日志、产物都跟着
         // 这一条滚。抽屉本身高度固定，滚动的是它里面这一层。

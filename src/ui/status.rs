@@ -5,6 +5,8 @@ use gpui_kit::component::status_bar::StatusBar;
 
 use super::*;
 
+use super::downloads::writing_text;
+
 impl AppView {
     pub(super) async fn refresh_status(
         status: &Arc<Mutex<Status>>,
@@ -88,7 +90,7 @@ impl AppView {
             }
         }
         match self.download_state {
-            DownloadState::Failed(problem) => Some(problem),
+            DownloadState::Failed { problem, .. } => Some(problem),
             _ => None,
         }
     }
@@ -118,6 +120,15 @@ impl AppView {
 
         if let Some(problem) = self.current_failure() {
             bar = bar.child(Label::new(crate::app::notice_for(problem).text).text_sm());
+        }
+        // 正在写盘的时候，状态栏里说一句写到哪个文件了。
+        if let DownloadState::Downloading(task) = &self.download_state {
+            bar = bar.child(
+                div()
+                    .id("download-writing")
+                    .test_support()
+                    .child(Label::new(writing_text(&task.path)).text_sm()),
+            );
         }
         for notice in &self.notices {
             bar = bar.child(Label::new(notice.text.clone()).text_sm());

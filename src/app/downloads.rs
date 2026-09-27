@@ -6,9 +6,6 @@ use crate::github::{BuildArtifact, GitHubGateway, ReleaseAsset, SecretToken, spl
 
 use super::repositories::AppProblem;
 
-/// Artifacts larger than this need an explicit confirmation before download.
-pub const DEFAULT_SIZE_THRESHOLD_BYTES: u64 = 50 * 1024 * 1024;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadKind {
     RunLogs {
@@ -24,8 +21,12 @@ pub enum DownloadKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingDownload {
-    pub file_name: String,
+/// 一次下载：下的是哪一样东西、文件叫什么、多大。
+///
+/// 正在下的那一个会一直挂在状态里，界面才知道把进度条摆在哪一行。
+pub struct DownloadTask {
+    /// 文件写到哪儿——状态栏和行里说"正在写入 / 已经保存到"时用的就是它。
+    pub path: PathBuf,
     pub size_in_bytes: Option<u64>,
     pub kind: DownloadKind,
 }
@@ -34,41 +35,36 @@ pub struct PendingDownload {
 pub enum DownloadState {
     #[default]
     Idle,
-    NeedsConfirmation(PendingDownload),
-    Downloading,
-    Saved(PathBuf),
-    Failed(AppProblem),
+    Downloading(DownloadTask),
+    /// 下好了：哪一样东西，存到哪儿了。
+    Saved(DownloadTask),
+    /// 没下下来：哪一样东西，为什么。
+    Failed {
+        task: DownloadTask,
+        problem: AppProblem,
+    },
 }
 
 /// Downloads run log archives, build artifacts and release assets to a local
 /// directory.
-/// octocrab buffers whole payloads in memory, so anything large is confirmed
-/// first (ticket 07).
+///
+/// 点下载就是下，不再先问一句——大文件也一样。进度只能是"不确定"的那种：
+/// octocrab 一口气把整个文件读进内存，没有可以数的字节流（ticket 07）。
 pub struct Downloads {
     directory: PathBuf,
-    threshold: u64,
     state: DownloadState,
 }
 
 impl Downloads {
     pub fn new(directory: impl Into<PathBuf>) -> Self {
-        Self::with_threshold(directory, DEFAULT_SIZE_THRESHOLD_BYTES)
-    }
-
-    pub fn with_threshold(directory: impl Into<PathBuf>, threshold: u64) -> Self {
         Self {
             directory: directory.into(),
-            threshold,
             state: DownloadState::Idle,
         }
     }
 
     pub fn state(&self) -> &DownloadState {
         &self.state
-    }
-
-    pub fn threshold(&self) -> u64 {
-        self.threshold
     }
 
     pub fn file_name_for_artifact(artifact: &BuildArtifact) -> String {
@@ -84,39 +80,60 @@ impl Downloads {
         sanitize(&asset.name)
     }
 
-    /// Whether this artifact is big enough to need a confirmation.
-    pub fn needs_confirmation(&self, artifact: &BuildArtifact) -> bool {
-        artifact.size_in_bytes > self.threshold
+    /// 记下"这一样东西开始下了"，并把这件事交给调用方。
+    ///
+    /// 界面要用这个任务当场把进度条和状态栏那句话摆出来——不能等请求回来才动。
+    pub fn begin_run_logs(&mut self, run_id: u64) -> DownloadTask {
+        let task = DownloadTask {
+            path: self.directory.join(Self::file_name_for_run_logs(run_id)),
+            size_in_bytes: None,
+            kind: DownloadKind::RunLogs { run_id },
+        };
+        self.state = DownloadState::Downloading(task.clone());
+        task
     }
 
-    /// Whether something this size is big enough to need a confirmation.
-    pub fn needs_confirmation_for(&self, size_in_bytes: u64) -> bool {
-        size_in_bytes > self.threshold
-    }
-
-    /// Park an artifact behind a confirmation prompt.
-    pub fn queue_artifact(&mut self, artifact: &BuildArtifact) {
-        self.state = DownloadState::NeedsConfirmation(PendingDownload {
-            file_name: Self::file_name_for_artifact(artifact),
+    pub fn begin_artifact(&mut self, artifact: &BuildArtifact) -> DownloadTask {
+        let task = DownloadTask {
+            path: self.directory.join(Self::file_name_for_artifact(artifact)),
             size_in_bytes: Some(artifact.size_in_bytes),
             kind: DownloadKind::Artifact {
                 artifact_id: artifact.id,
             },
-        });
-    }
-
-    /// Park a release asset behind a confirmation prompt.
-    pub fn queue_release_asset(&mut self, asset: &ReleaseAsset) {
-        let Some(url) = asset.download_url.clone() else {
-            return;
         };
-        self.state = DownloadState::NeedsConfirmation(PendingDownload {
-            file_name: Self::file_name_for_release_asset(asset),
-            size_in_bytes: Some(asset.size_in_bytes),
-            kind: DownloadKind::ReleaseAsset { url },
-        });
+        self.state = DownloadState::Downloading(task.clone());
+        task
     }
 
+    /// 发布资产没有下载地址就没什么可下的：当场记成失败，也没有任务可下。
+    pub fn begin_release_asset(&mut self, asset: &ReleaseAsset) -> Option<DownloadTask> {
+        let task = DownloadTask {
+            path: self
+                .directory
+                .join(Self::file_name_for_release_asset(asset)),
+            size_in_bytes: Some(asset.size_in_bytes),
+            kind: DownloadKind::ReleaseAsset {
+                url: asset.download_url.clone().unwrap_or_default(),
+            },
+        };
+        match asset.download_url {
+            Some(_) => {
+                self.state = DownloadState::Downloading(task.clone());
+                Some(task)
+            }
+            None => {
+                self.state = DownloadState::Failed {
+                    task,
+                    problem: AppProblem::Unexpected,
+                };
+                None
+            }
+        }
+    }
+
+    /// 取消：把状态收回"什么都没发生"。
+    ///
+    /// 真正掐掉请求的是界面那边的任务把手；这里只负责别让状态停在"正在下"。
     pub fn cancel(&mut self) {
         self.state = DownloadState::Idle;
     }
@@ -128,15 +145,8 @@ impl Downloads {
         repository: &str,
         run_id: u64,
     ) {
-        let file_name = Self::file_name_for_run_logs(run_id);
-        self.perform(
-            gateway,
-            token,
-            repository,
-            DownloadKind::RunLogs { run_id },
-            file_name,
-        )
-        .await;
+        let task = self.begin_run_logs(run_id);
+        self.download(gateway, token, repository, task).await;
     }
 
     pub async fn download_artifact(
@@ -146,17 +156,8 @@ impl Downloads {
         repository: &str,
         artifact: &BuildArtifact,
     ) {
-        let file_name = Self::file_name_for_artifact(artifact);
-        self.perform(
-            gateway,
-            token,
-            repository,
-            DownloadKind::Artifact {
-                artifact_id: artifact.id,
-            },
-            file_name,
-        )
-        .await;
+        let task = self.begin_artifact(artifact);
+        self.download(gateway, token, repository, task).await;
     }
 
     /// 下载一个发布资产：URL 缺失就没什么可下的，直接当作失败。
@@ -167,58 +168,31 @@ impl Downloads {
         repository: &str,
         asset: &ReleaseAsset,
     ) {
-        let Some(url) = asset.download_url.clone() else {
-            self.state = DownloadState::Failed(AppProblem::Unexpected);
+        let Some(task) = self.begin_release_asset(asset) else {
             return;
         };
-        let file_name = Self::file_name_for_release_asset(asset);
-        self.perform(
-            gateway,
-            token,
-            repository,
-            DownloadKind::ReleaseAsset { url },
-            file_name,
-        )
-        .await;
+        self.download(gateway, token, repository, task).await;
     }
 
-    /// Run the download the user just confirmed.
-    pub async fn confirm(
+    /// 取回一个已经 `begin_*` 过的下载，写进它自己那个路径。
+    pub async fn download(
         &mut self,
         gateway: &dyn GitHubGateway,
         token: &SecretToken,
         repository: &str,
-    ) {
-        let DownloadState::NeedsConfirmation(pending) = self.state.clone() else {
-            return;
-        };
-        self.perform(gateway, token, repository, pending.kind, pending.file_name)
-            .await;
-    }
-
-    /// The artifact behind the current confirmation prompt, if any.
-    pub fn pending(&self) -> Option<&PendingDownload> {
-        match &self.state {
-            DownloadState::NeedsConfirmation(pending) => Some(pending),
-            _ => None,
-        }
-    }
-
-    async fn perform(
-        &mut self,
-        gateway: &dyn GitHubGateway,
-        token: &SecretToken,
-        repository: &str,
-        kind: DownloadKind,
-        file_name: String,
+        task: DownloadTask,
     ) {
         let Some((owner, repository_name)) = split_full_name(repository) else {
-            self.state = DownloadState::Failed(AppProblem::Unexpected);
+            self.state = DownloadState::Failed {
+                task,
+                problem: AppProblem::Unexpected,
+            };
             return;
         };
 
-        debug!(file = %file_name, "downloading");
-        self.state = DownloadState::Downloading;
+        let kind = task.kind.clone();
+        debug!(path = %task.path.display(), "downloading");
+        self.state = DownloadState::Downloading(task.clone());
         let bytes = match kind {
             DownloadKind::RunLogs { run_id } => {
                 gateway
@@ -234,35 +208,41 @@ impl Downloads {
         };
 
         match bytes {
-            Ok(bytes) => match self.save(&file_name, &bytes) {
-                Ok(path) => {
-                    info!(path = %path.display(), bytes = bytes.len(), "saved a download");
-                    self.state = DownloadState::Saved(path);
+            Ok(bytes) => match self.save(&task.path, &bytes) {
+                Ok(()) => {
+                    info!(path = %task.path.display(), bytes = bytes.len(), "saved a download");
+                    self.state = DownloadState::Saved(task);
                 }
                 Err(error) => {
-                    warn!(%error, file = %file_name, "could not write the download");
-                    self.state = DownloadState::Failed(AppProblem::Unexpected);
+                    warn!(%error, path = %task.path.display(), "could not write the download");
+                    self.state = DownloadState::Failed {
+                        task,
+                        problem: AppProblem::Unexpected,
+                    };
                 }
             },
             Err(error) => {
-                warn!(%error, file = %file_name, "download failed");
-                self.state = DownloadState::Failed(AppProblem::from_gateway(&error));
+                warn!(%error, "download failed");
+                self.state = DownloadState::Failed {
+                    task,
+                    problem: AppProblem::from_gateway(&error),
+                };
             }
         }
     }
 
-    fn save(&self, file_name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    fn save(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.directory)?;
-        let path = self.directory.join(file_name);
-        std::fs::write(&path, bytes)?;
-        Ok(path)
+        std::fs::write(path, bytes)
     }
 
     /// Write a file the console produced itself — a workflow draft, say — into
     /// the same local directory artifacts go to. An existing file of the same
     /// name is replaced.
     pub fn save_file(&self, file_name: &str, contents: &str) -> std::io::Result<PathBuf> {
-        self.save(&sanitize(file_name), contents.as_bytes())
+        let path = self.directory.join(sanitize(file_name));
+        self.save(&path, contents.as_bytes())?;
+        Ok(path)
     }
 }
 

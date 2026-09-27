@@ -301,20 +301,19 @@ fn scratch_dir(tag: &str) -> std::path::PathBuf {
 }
 
 #[tokio::test]
-async fn a_small_artifact_downloads_without_confirmation_and_hits_disk() {
+async fn an_artifact_downloads_straight_to_disk() {
     let gateway = Arc::new(FakeGateway::default());
     gateway.push_artifact(Ok(b"zip-bytes".to_vec()));
     let dir = scratch_dir("small");
-    let mut downloads = Downloads::with_threshold(&dir, 1024);
+    let mut downloads = Downloads::new(&dir);
 
     let artifact = artifact(7, "app.zip", 512);
-    assert!(!downloads.needs_confirmation(&artifact));
     downloads
         .download_artifact(&*gateway, &token(), "octo/alpha", &artifact)
         .await;
 
     let saved = match downloads.state() {
-        DownloadState::Saved(path) => path.clone(),
+        DownloadState::Saved(task) => task.path.clone(),
         other => panic!("expected a saved file, got {other:?}"),
     };
     assert_eq!(saved.file_name().unwrap(), "app.zip.zip");
@@ -324,38 +323,20 @@ async fn a_small_artifact_downloads_without_confirmation_and_hits_disk() {
 }
 
 #[tokio::test]
-async fn a_large_artifact_waits_for_confirmation_before_downloading() {
+async fn a_large_artifact_downloads_straight_away_too() {
     let gateway = Arc::new(FakeGateway::default());
     gateway.push_artifact(Ok(b"big".to_vec()));
     let dir = scratch_dir("large");
-    let mut downloads = Downloads::with_threshold(&dir, 1024);
+    let mut downloads = Downloads::new(&dir);
 
-    let artifact = artifact(9, "installer.zip", 4096);
-    assert!(downloads.needs_confirmation(&artifact));
-
-    downloads.queue_artifact(&artifact);
-    assert!(downloads.pending().is_some());
-    // Nothing has been fetched yet.
-    assert!(gateway.downloads().is_empty());
-
-    downloads.confirm(&*gateway, &token(), "octo/alpha").await;
+    // 512 MB：够大，但点下去就是下——不再先问一句。
+    let artifact = artifact(9, "installer.zip", 512 * 1024 * 1024);
+    downloads
+        .download_artifact(&*gateway, &token(), "octo/alpha", &artifact)
+        .await;
 
     assert!(matches!(downloads.state(), DownloadState::Saved(_)));
     assert_eq!(gateway.downloads(), vec![9]);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[tokio::test]
-async fn cancelling_a_confirmation_downloads_nothing() {
-    let gateway = Arc::new(FakeGateway::default());
-    let dir = scratch_dir("cancel");
-    let mut downloads = Downloads::with_threshold(&dir, 1024);
-
-    downloads.queue_artifact(&artifact(9, "installer.zip", 4096));
-    downloads.cancel();
-
-    assert_eq!(*downloads.state(), DownloadState::Idle);
-    assert!(gateway.downloads().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -364,7 +345,7 @@ async fn a_failed_artifact_download_is_surfaced() {
     let gateway = Arc::new(FakeGateway::default());
     gateway.push_artifact(Err(GatewayError::Transport("offline".to_owned())));
     let dir = scratch_dir("artifact-fail");
-    let mut downloads = Downloads::with_threshold(&dir, 1024);
+    let mut downloads = Downloads::new(&dir);
 
     downloads
         .download_artifact(
@@ -375,10 +356,13 @@ async fn a_failed_artifact_download_is_surfaced() {
         )
         .await;
 
-    assert_eq!(
-        *downloads.state(),
-        DownloadState::Failed(AppProblem::Network)
-    );
+    assert!(matches!(
+        downloads.state(),
+        DownloadState::Failed {
+            problem: AppProblem::Network,
+            ..
+        }
+    ));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -387,14 +371,14 @@ async fn the_run_logs_archive_downloads_without_a_size_gate() {
     let gateway = Arc::new(FakeGateway::default());
     gateway.push_logs(Ok(b"log-zip".to_vec()));
     let dir = scratch_dir("logs");
-    let mut downloads = Downloads::with_threshold(&dir, 1);
+    let mut downloads = Downloads::new(&dir);
 
     downloads
         .download_run_logs(&*gateway, &token(), "octo/alpha", 42)
         .await;
 
     let saved = match downloads.state() {
-        DownloadState::Saved(path) => path.clone(),
+        DownloadState::Saved(task) => task.path.clone(),
         other => panic!("expected a saved file, got {other:?}"),
     };
     assert_eq!(saved.file_name().unwrap(), "run-42-logs.zip");
@@ -407,16 +391,19 @@ async fn a_failed_run_logs_download_is_surfaced() {
     let gateway = Arc::new(FakeGateway::default());
     gateway.push_logs(Err(GatewayError::NotFound));
     let dir = scratch_dir("logs-fail");
-    let mut downloads = Downloads::with_threshold(&dir, 1024);
+    let mut downloads = Downloads::new(&dir);
 
     downloads
         .download_run_logs(&*gateway, &token(), "octo/alpha", 42)
         .await;
 
-    assert_eq!(
-        *downloads.state(),
-        DownloadState::Failed(AppProblem::NotFound)
-    );
+    assert!(matches!(
+        downloads.state(),
+        DownloadState::Failed {
+            problem: AppProblem::NotFound,
+            ..
+        }
+    ));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -426,16 +413,15 @@ async fn a_release_asset_downloads_to_disk_under_its_release_name() {
     let gateway = Arc::new(FakeGateway::default());
     gateway.push_asset(Ok(b"dmg-bytes".to_vec()));
     let dir = scratch_dir("release-asset");
-    let mut downloads = Downloads::with_threshold(&dir, 1024);
+    let mut downloads = Downloads::new(&dir);
 
     let asset = release_asset("github-action-console-0.1.0-web-arm.dmg", 512);
-    assert!(!downloads.needs_confirmation_for(asset.size_in_bytes));
     downloads
         .download_release_asset(&*gateway, &token(), "octo/alpha", &asset)
         .await;
 
     let saved = match downloads.state() {
-        DownloadState::Saved(path) => path.clone(),
+        DownloadState::Saved(task) => task.path.clone(),
         other => panic!("expected a saved file, got {other:?}"),
     };
     // 文件名就是 Release 上的名字：用户下载时要找的就是它。
@@ -453,22 +439,21 @@ async fn a_release_asset_downloads_to_disk_under_its_release_name() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 大的包先问一句，问过之后才真的去取。
+/// 大的包也不问：点下去就取。
 #[tokio::test]
-async fn a_large_release_asset_waits_for_confirmation() {
+async fn a_large_release_asset_downloads_straight_away() {
     let gateway = Arc::new(FakeGateway::default());
     gateway.push_asset(Ok(b"big-dmg".to_vec()));
     let dir = scratch_dir("release-asset-large");
-    let mut downloads = Downloads::with_threshold(&dir, 1024);
+    let mut downloads = Downloads::new(&dir);
 
-    let asset = release_asset("github-action-console-0.1.0-mas-unsigned.pkg", 4096);
-    assert!(downloads.needs_confirmation_for(asset.size_in_bytes));
-    downloads.queue_release_asset(&asset);
-
-    assert!(downloads.pending().is_some());
-    assert!(gateway.asset_urls().is_empty(), "还没确认就先去取了");
-
-    downloads.confirm(&*gateway, &token(), "octo/alpha").await;
+    let asset = release_asset(
+        "github-action-console-0.1.0-mas-unsigned.pkg",
+        512 * 1024 * 1024,
+    );
+    downloads
+        .download_release_asset(&*gateway, &token(), "octo/alpha", &asset)
+        .await;
 
     assert!(matches!(downloads.state(), DownloadState::Saved(_)));
     assert_eq!(gateway.asset_urls().len(), 1);
@@ -480,7 +465,7 @@ async fn a_large_release_asset_waits_for_confirmation() {
 async fn a_release_asset_without_a_url_fails_loudly() {
     let gateway = Arc::new(FakeGateway::default());
     let dir = scratch_dir("release-asset-no-url");
-    let mut downloads = Downloads::with_threshold(&dir, 1024);
+    let mut downloads = Downloads::new(&dir);
 
     let mut asset = release_asset("github-action-console-0.1.0-windows.msi", 128);
     asset.download_url = None;
@@ -488,7 +473,7 @@ async fn a_release_asset_without_a_url_fails_loudly() {
         .download_release_asset(&*gateway, &token(), "octo/alpha", &asset)
         .await;
 
-    assert!(matches!(downloads.state(), DownloadState::Failed(_)));
+    assert!(matches!(downloads.state(), DownloadState::Failed { .. }));
     assert!(gateway.asset_urls().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }

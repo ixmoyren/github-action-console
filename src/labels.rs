@@ -223,11 +223,12 @@ pub const ARTIFACTS_EMPTY: &str = "该运行没有构建产物。";
 pub const ARTIFACTS_EXPIRED: &str = "已过期";
 pub const ARTIFACT_DOWNLOAD: &str = "下载";
 pub const RUN_LOGS_DOWNLOAD: &str = "下载运行日志包";
-pub const DOWNLOAD_CONFIRM_TITLE: &str = "该文件较大，确认下载？";
-pub const DOWNLOAD_CONFIRM: &str = "确认下载";
-pub const DOWNLOAD_CANCEL: &str = "取消";
 pub const DOWNLOADING: &str = "正在下载…";
-pub const DOWNLOAD_SAVED: &str = "已保存到";
+pub const DOWNLOAD_WRITING: &str = "文件正在写入";
+pub const DOWNLOAD_SAVED: &str = "文件已经保存到";
+pub const DOWNLOAD_CANCEL: &str = "取消";
+pub const DOWNLOAD_DONE: &str = "下载完成";
+pub const DOWNLOAD_FAILED: &str = "下载失败";
 
 pub const STATUS_BAR_ACCOUNT: &str = "登录用户";
 pub const STATUS_BAR_RATE_LIMIT: &str = "限流余量";

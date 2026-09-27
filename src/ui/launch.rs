@@ -1,20 +1,26 @@
 use super::*;
 use super::{AppView, Services};
 
+/// 下载落在哪儿：系统的「下载」目录。
+///
+/// Linux 上这个目录来自 XDG user dirs（`~/.config/user-dirs.dirs`），没配就没有；
+/// 那种情况下退回应用自己的目录，总比把文件甩到当前工作目录强。
 pub(super) fn default_download_dir() -> std::io::Result<std::path::PathBuf> {
-    let database = default_store_path()?;
-    let dir = database
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join("downloads");
+    let dir = dirs::download_dir().unwrap_or_else(|| app_dir().join("downloads"));
+    tracing::debug!(dir = %dir.display(), "downloads land here");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
 
-pub(super) fn default_store_path() -> std::io::Result<std::path::PathBuf> {
-    let base = dirs::data_dir().unwrap_or_else(std::env::temp_dir);
+/// 应用自己的目录：数据库，以及系统说不上「下载」目录时的下载都在这儿。
+fn app_dir() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("github-action-console")
+}
 
-    let dir = base.join("github-action-console");
+pub(super) fn default_store_path() -> std::io::Result<std::path::PathBuf> {
+    let dir = app_dir();
     std::fs::create_dir_all(&dir)?;
     Ok(dir.join("console.sqlite"))
 }

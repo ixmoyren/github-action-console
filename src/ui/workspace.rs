@@ -2664,8 +2664,8 @@ mod tests {
     use tokio::sync::Mutex;
 
     use crate::app::{
-        AppProblem, AuthManager, AuthState, Downloads, LoadState, RepositoryList,
-        RepositoryListState, RunDetail, Status, Workspace,
+        AppProblem, AuthManager, AuthState, DownloadKind, DownloadState, DownloadTask, Downloads,
+        LoadState, RepositoryList, RepositoryListState, RunDetail, Status, Workspace,
     };
     use crate::github::client::OctocrabGateway;
     use crate::github::{
@@ -2678,6 +2678,7 @@ mod tests {
     use crate::app::{BoardCell, BoardRow, BoardSnapshot, ManifestState};
     use crate::release::ReleaseState;
 
+    use super::super::downloads::{DownloadAnnouncement, download_announcement};
     use super::super::runs::run_build_opens;
     use super::{
         ActionKey, AppView, CHANNELS, DrawerKind, ReleaseBoard, Root, RunArtifacts, Services,
@@ -3684,6 +3685,114 @@ mod tests {
                 view.runs_visible.first().map(|run| run.id),
                 Some(3),
                 "clicking the status header did not sort the runs"
+            );
+        });
+
+        // 这一条开始下了：下载按钮换成进度条，就在它自己那一行上。
+        view.update(cx, |view, cx| {
+            view.expanded_run = Some(1);
+            view.download_state = DownloadState::Downloading(downloading_task(7));
+            cx.notify();
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(
+                window.try_find("run-build-download-7").is_none(),
+                "the download button stayed while the file was downloading"
+            );
+            assert!(
+                window.find("run-build-download-7-progress").visible(),
+                "no progress bar in the row being downloaded"
+            );
+            assert!(
+                window.find("run-build-download-7-cancel").visible(),
+                "no cancel button beside the progress bar"
+            );
+            assert!(
+                window.find("download-writing").visible(),
+                "the status bar does not say which file is being written"
+            );
+        })
+        .unwrap();
+
+        // 下完了：进度条和取消都消失，那一行变成"文件已经保存到 … 中" + 下载按钮。
+        view.update(cx, |view, cx| {
+            view.download_state = DownloadState::Saved(downloading_task(7));
+            cx.notify();
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(window.try_find("run-build-download-7-progress").is_none());
+            assert!(window.try_find("run-build-download-7-cancel").is_none());
+            assert!(
+                window.try_find("download-writing").is_none(),
+                "the status bar still says it is writing"
+            );
+            assert!(
+                window.find("run-build-download-7").visible(),
+                "the download button did not come back after saving"
+            );
+        })
+        .unwrap();
+    }
+
+    /// 构建产物下完之后那句话：上面有文件保存的路径。
+    #[test]
+    fn a_finished_download_reports_where_the_file_landed() {
+        let path = downloading_task(7).path;
+        assert_eq!(
+            download_announcement(&DownloadState::Saved(downloading_task(7))),
+            Some(DownloadAnnouncement::Saved(format!(
+                "{} {} 中",
+                crate::labels::DOWNLOAD_SAVED,
+                path.display()
+            )))
+        );
+        // 还在路上、什么都没发生时，没什么好弹的。
+        assert_eq!(
+            download_announcement(&DownloadState::Downloading(downloading_task(7))),
+            None
+        );
+        assert_eq!(download_announcement(&DownloadState::Idle), None);
+    }
+
+    /// 一条构建产物的下载任务：产物 7 写到临时目录下那个名字里。
+    fn downloading_task(artifact_id: u64) -> DownloadTask {
+        DownloadTask {
+            path: std::env::temp_dir().join(format!("artifact-{artifact_id}.zip")),
+            size_in_bytes: Some(4096),
+            kind: DownloadKind::Artifact { artifact_id },
+        }
+    }
+
+    /// 下载完成的提示会真的弹出来：排进队里的那条，下一帧进了通知层。
+    #[gpui_kit::test]
+    fn a_finished_download_pops_a_toast(cx: &mut TestAppContext) {
+        let (handle, view, _editor) = workspace_page(cx);
+        let handle: gpui_kit::AnyWindowHandle = handle.into();
+
+        view.update(cx, |view, cx| {
+            view.announce_download(&DownloadState::Saved(downloading_task(7)));
+            cx.notify();
+        });
+
+        // 一帧把排队的提示交给通知层，再一帧把它画出来。
+        for _ in 0..2 {
+            cx.update_window(handle, |_, window, cx| {
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        }
+
+        view.read_with(cx, |view, cx| {
+            assert!(
+                view.pending_notifications.is_empty(),
+                "the queued notice never reached the notification layer"
+            );
+            assert_eq!(
+                view.notifications.read(cx).notifications().len(),
+                1,
+                "the toast never popped"
             );
         });
     }

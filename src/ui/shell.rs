@@ -51,6 +51,8 @@ impl Render for AppView {
         self.sync_yaml_editor(window, cx);
         // Same handover for the steps of every job on the run-detail page.
         self.sync_job_editors(window, cx);
+        // 下载完成之类的提示：拿得到 window 的这一帧把它们弹出去。
+        self.drain_notifications(window, cx);
 
         // The window title carries the signed-in user; the app chrome no longer
         // repeats it anywhere on screen.
@@ -75,6 +77,7 @@ impl Render for AppView {
                 // gpui-component's Root does not draw the dialog layer; the
                 // app view has to render it.
                 .children(Root::render_dialog_layer(window, cx))
+                .children(Root::render_notification_layer(window, cx))
                 .into_any_element();
         }
 
@@ -129,6 +132,26 @@ impl Render for AppView {
             )
             .child(self.status_bar(cx))
             .children(Root::render_dialog_layer(window, cx))
+            .children(Root::render_notification_layer(window, cx))
             .into_any_element()
+    }
+}
+
+impl AppView {
+    /// 把排队等着的提示交给通知层弹出来。
+    ///
+    /// 弹出要有 window，而下载完成是在异步任务里知道的，所以那一步只排队；这里是
+    /// 两边的接头处。`defer` 是必要的：push 会新建实体、改通知层，不该在画的时候做。
+    fn drain_notifications(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_notifications.is_empty() {
+            return;
+        }
+        let notifications = self.notifications.clone();
+        for notification in self.pending_notifications.drain(..) {
+            let notifications = notifications.clone();
+            window.defer(cx, move |window, cx| {
+                notifications.update(cx, |list, cx| list.push(notification, window, cx));
+            });
+        }
     }
 }

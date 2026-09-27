@@ -8,6 +8,8 @@ use gpui_kit::component::Sizable as _;
 
 use super::*;
 
+use super::downloads::download_controls;
+
 const RUN_COLUMN_STATUS: &str = "status";
 const RUN_COLUMN_WORKFLOW: &str = "workflow";
 const RUN_COLUMN_CONCLUSION: &str = "conclusion";
@@ -309,9 +311,6 @@ impl AppView {
                 for artifact in &artifacts.artifacts {
                     detail = detail.child(self.artifact_row(artifact, cx));
                 }
-                if let Some(text) = download_status(&self.download_state) {
-                    detail = detail.child(Label::new(text).text_sm());
-                }
             }
             Some(artifacts) if matches!(artifacts.state, LoadState::Failed(_)) => {
                 detail = detail.child(Label::new(labels::RUNS_BUILD_FAILED).text_sm());
@@ -325,15 +324,17 @@ impl AppView {
 
     /// 展开详情里的一条构建产物：名字、大小、过期标记，加下载入口。
     ///
-    /// 大到要确认的产物停在 `Downloads` 里等人点头，所以那一行那时摆的是确认/取消——
-    /// 在表格里下不到东西，等于没给入口。
+    /// 正在下的那一条摆的是进度条，占的就是下载按钮那个位置：点下去就开始下，
+    /// 不先问一句。
     fn artifact_row(&self, artifact: &BuildArtifact, cx: &mut Context<Self>) -> AnyElement {
         let expired = if artifact.expired {
             format!("（{}）", labels::ARTIFACTS_EXPIRED)
         } else {
             String::new()
         };
-        let row = div()
+        let artifact_id = artifact.id;
+        let downloading = artifact.clone();
+        div()
             .flex()
             .flex_row()
             .items_center()
@@ -341,50 +342,16 @@ impl AppView {
             .child(pickable(format!(
                 "{}｜{} B{}",
                 artifact.name, artifact.size_in_bytes, expired
-            )));
-
-        let waiting_here = match self.download_state {
-            DownloadState::NeedsConfirmation(ref pending) => matches!(
-                pending.kind,
-                DownloadKind::Artifact { artifact_id } if artifact_id == artifact.id
-            ),
-            _ => false,
-        };
-        let artifact_id = artifact.id;
-        if waiting_here {
-            return row
-                .child(
-                    Button::new(SharedString::from(format!(
-                        "run-build-confirm-{artifact_id}"
-                    )))
-                    .xsmall()
-                    .primary()
-                    .label(labels::DOWNLOAD_CONFIRM)
-                    .on_click(cx.listener(|this, _, _, cx| this.confirm_download(cx))),
-                )
-                .child(
-                    Button::new(SharedString::from(format!(
-                        "run-build-cancel-{artifact_id}"
-                    )))
-                    .xsmall()
-                    .label(labels::DOWNLOAD_CANCEL)
-                    .on_click(cx.listener(|this, _, _, cx| this.cancel_download(cx))),
-                )
-                .into_any_element();
-        }
-
-        let artifact = artifact.clone();
-        row.child(
-            Button::new(SharedString::from(format!(
-                "run-build-download-{artifact_id}"
             )))
-            .xsmall()
-            .label(labels::ARTIFACT_DOWNLOAD)
-            .on_click(
-                cx.listener(move |this, _, _, cx| this.download_artifact(artifact.clone(), cx)),
-            ),
-        )
-        .into_any_element()
+            .child(download_controls(
+                &self.download_state,
+                &DownloadKind::Artifact { artifact_id },
+                SharedString::from(format!("run-build-download-{artifact_id}")),
+                labels::ARTIFACT_DOWNLOAD,
+                cx.listener(move |this, _, _, cx| this.download_artifact(downloading.clone(), cx)),
+                cx,
+            ))
+            .into_any_element()
     }
 
     /// 运行列表里点「已完成」：展开这条运行的构建产物，再点一下收回去。
@@ -559,16 +526,4 @@ fn created_at(run: &WorkflowRun) -> String {
 /// 这是「点已完成」之后展不展开的唯一规则，所以单独拎出来。
 pub(super) fn run_build_opens(artifacts: &RunArtifacts) -> bool {
     artifacts.state == LoadState::Loaded && !artifacts.artifacts.is_empty()
-}
-
-/// 下载这件事现在走到哪一步：和哪条产物无关的状态，摆在详情最后一行。
-fn download_status(download: &DownloadState) -> Option<String> {
-    match download {
-        DownloadState::Downloading => Some(labels::DOWNLOADING.to_owned()),
-        DownloadState::Saved(path) => {
-            Some(format!("{}：{}", labels::DOWNLOAD_SAVED, path.display()))
-        }
-        DownloadState::Failed(problem) => Some(problem_text(*problem).to_owned()),
-        DownloadState::Idle | DownloadState::NeedsConfirmation(_) => None,
-    }
 }
