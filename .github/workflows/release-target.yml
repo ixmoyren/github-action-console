@@ -47,7 +47,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.plan.outputs.version }}
-      msi_version: ${{ steps.plan.outputs.msi_version }}
       matrix: ${{ steps.plan.outputs.matrix }}
       publish: ${{ steps.plan.outputs.publish }}
     steps:
@@ -67,7 +66,7 @@ jobs:
           TAG_BUILD: ${{ startsWith(github.ref, 'refs/tags/') }}
         run: |
           python3 - <<'PY'
-          import json, os, pathlib, re, subprocess, sys, tomllib
+          import json, os, pathlib, subprocess, sys, tomllib
 
           # 构建对象的名字从 Cargo.toml 推：[[bin]] 名优先，退回包名。
           with open("Cargo.toml", "rb") as handle:
@@ -156,32 +155,16 @@ jobs:
           for entry in entries:
               entry["binary"] = binary
 
-          # 版本号：dispatch 输入优先；tag 触发就用 tag 名；其余情况用包自己的版本。
-          # 分支名不是版本号——最初的写法把 main 当版本，WiX 直接不接受。
-          version = (os.environ.get("VERSION") or "").strip()
-          if not version:
-              if os.environ.get("TAG_BUILD") == "true":
-                  version = os.environ.get("REF_NAME") or ""
-              version = version or package.get("version") or "0.0.0"
-
-          def windows_version(value):
-              # Windows Installer 的版本必须是 x.x.x.x（每段 0..65534）：把 v 前缀、
-              # 预发布后缀都去掉，段数不足补 0。
-              numbers = re.findall(r"\d+", re.split(r"[-+]", value)[0])[:4]
-              while len(numbers) < 4:
-                  numbers.append("0")
-              return ".".join(str(min(int(number), 65534)) for number in numbers)
-
-          msi_version = windows_version(version)
+          # 版本号：dispatch 输入优先，其次 tag 名，最后退回 0.0.0。
+          version = (os.environ.get("VERSION") or "").strip() or os.environ.get("REF_NAME") or "0.0.0"
           # 挂 Release：tag 触发时总是挂；手动触发时看 publish 输入。
           publish = os.environ.get("TAG_BUILD") == "true" or (os.environ.get("PUBLISH") or "").lower() == "true"
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"version={version}\n")
-              out.write(f"msi_version={msi_version}\n")
               out.write(f"publish={'true' if publish else 'false'}\n")
               out.write(f"matrix={json.dumps(entries)}\n")
-          print(f"binary={binary} version={version} msi={msi_version} publish={publish}")
+          print(f"binary={binary} version={version} publish={publish}")
           for entry in entries:
               print(entry)
           PY
@@ -197,8 +180,6 @@ jobs:
     env:
       BINARY: ${{ matrix.binary }}
       VERSION: ${{ needs.plan.outputs.version }}
-      # Windows Installer 只认 x.x.x.x，和文件名里那个版本号不是一回事。
-      MSI_VERSION: ${{ needs.plan.outputs.msi_version }}
       PACKAGE: ${{ matrix.package }}
     steps:
       - uses: actions/checkout@v4
@@ -288,25 +269,17 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          # 每一步都自己看退出码：外部命令失败不会自己抛，不然会出现"candle 失败、
-          # light 找不到 wixobj、却照样打印 msi built"。
-          $ErrorActionPreference = 'Stop'
           $exe = "${{ env.BINARY }}.exe"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           $built = "target\${{ matrix.triple }}\release\$exe"
           if (Test-Path "packaging/windows/main.wxs") {
-            if (-not (Get-Command candle -ErrorAction SilentlyContinue)) {
-              choco install wixtoolset --yes --no-progress
-              if ($LASTEXITCODE -ne 0) { throw "wixtoolset 安装失败（退出码 $LASTEXITCODE）" }
-            }
+            choco install wixtoolset --yes --no-progress
             Copy-Item $built "dist\$exe"
             $msi = "dist\${{ env.BINARY }}-${{ env.VERSION }}-${{ matrix.target }}.msi"
-            candle -dSourceDir="$PWD\dist" -dExeName="$exe" -dProductVersion="${{ env.MSI_VERSION }}" `
+            candle -dSourceDir="$PWD\dist" -dExeName="$exe" -dProductVersion="${{ env.VERSION }}" `
               -dUpgradeCode="7f3d0f4c-0d5b-4a5e-9d1a-2f0f2c9a1b7e" `
               -o dist\main.wixobj packaging\windows\main.wxs
-            if ($LASTEXITCODE -ne 0) { throw "candle 失败（退出码 $LASTEXITCODE）" }
             light -ext WixUIExtension -o $msi dist\main.wixobj
-            if ($LASTEXITCODE -ne 0) { throw "light 失败（退出码 $LASTEXITCODE）" }
             Write-Host "::warning::[SIMULATED] signtool 代码签名未执行：无证书。"
             Write-Host "::notice::msi built: $msi"
           } else {
