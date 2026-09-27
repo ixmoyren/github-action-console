@@ -56,3 +56,14 @@
 **2026-09-28 建 tag 的动作挪进表单**：表头每列那颗「创建 Tag」撤掉，改成表单第三行——
 「版本」下拉（就是通道名，默认 lts，选项 lts / latest / dogfood）+ 一颗「创建」。于是看板顶上
 三行：分支、提交、版本 + 创建；表头只剩行名和各 tag 名字，格子还是各自的 job 状态。
+
+**2026-09-28 修：点「创建」会把窗口弄崩**。日志里 tag 其实建成了（`POST /git/refs` 422 →
+`PATCH /git/refs/tags/lts` 200），随后 app 在
+`tower::buffer::service: there is no reactor running` 上 panic。原因是我把建完之后的
+"把运行列表拉一遍"（`workspace.reload_runs`）写在了 **GPUI 那条线程**的 async 块里——那是一趟
+HTTP，hyper/tower 要 tokio reactor，不在 tokio 上跑就 panic（GPUI 的 executor 不是 tokio）。
+改法：这一趟也 `runtime.spawn` 出去，跟其它加载一样。
+
+教训记一条：UI 里凡是会发 HTTP 的 `await`（gateway 方法，以及应用层里会调 gateway 的方法，
+比如 `reload_runs`/`load_*`/`trigger`/`create_tag`） **必须**包在 `runtime.spawn` 里；GPUI 那条
+线程只跑界面逻辑。这类错编译期看不出来，只有真点一次才会炸。

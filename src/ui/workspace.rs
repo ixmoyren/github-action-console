@@ -2477,7 +2477,20 @@ impl AppView {
                 status.lock().await.push(tag_notice(outcome));
                 if pushed {
                     // tag 推上去会触发发布工作流：把运行拉一遍，那个 run 才会出现。
-                    workspace.lock().await.reload_runs(&*gateway, &token).await;
+                    //
+                    // 这一趟是 HTTP，必须在 tokio 上跑：GPUI 那条线程没有 reactor，
+                    // 直接 await 会 panic（"there is no reactor running"）。
+                    let task = runtime.spawn({
+                        let gateway = gateway.clone();
+                        let workspace = workspace.clone();
+                        let token = token.clone();
+                        async move {
+                            workspace.lock().await.reload_runs(&*gateway, &token).await;
+                        }
+                    });
+                    if let Err(error) = task.await {
+                        warn!(%error, "a background task did not finish");
+                    }
                 }
             }
 
