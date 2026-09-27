@@ -17,7 +17,9 @@ LTS / latest / dogfood 是 **仓库里的 git tag**，不是控制台自己记�
 
 - 通道是 **移动的 tag**：`latest` 昨天指 A、今天指 B，这是它的正常用法。控制台建 tag 时
   已经存在就移动它（`PATCH /git/refs/tags/<tag>`，force）。
-- 发布工作流要在 `on.push.tags` 里认这三个 tag（外加原来的 `v*`），否则推 tag 什么都不会跑。
+- 发布工作流 **对任何 tag 都跑**（`on.push.tags: ['**']`）：通道 tag 和版本 tag 都是 tag，
+  谁推上来都该构建一次，不该由工作流去挑名字。挑版本号的规则仍然在 `plan` 里
+  （tag 名像版本才当版本，否则取代码里的版本）。
 - **通道 tag 不是版本号**。tag 名像版本（`v1.2.3` / `1.2.3`）才当版本用，否则版本取自代码
   （`Cargo.toml`）——于是 `latest` 这次构建的产物叫 `github-action-console-0.1.0-windows.msi`，
   挂到 `latest` 这个 Release 上。Release 挂的是 **触发它的那个 tag**，版本号只用来命名文件。

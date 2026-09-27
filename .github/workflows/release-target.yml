@@ -36,12 +36,9 @@ on:
         default: false
   push:
     tags:
-      - "v*"
-      # 通道 tag：发布看板把 lts / latest / dogfood 指到某个提交上，就是"发布到这条
-      # 通道"，所以它们也要触发这次构建。
-      - "lts"
-      - "latest"
-      - "dogfood"
+      # 任何 tag 都跑：通道 tag（lts / latest / dogfood，看板建的）和版本 tag
+      # （v1.2.3）都是 tag，谁推上来都该构建一次。
+      - "**"
 
 permissions:
   contents: write

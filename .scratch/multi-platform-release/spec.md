@@ -66,7 +66,7 @@ Feature: multi-platform-release
 
 ### CI 模板（`.github/workflows/release-target.yml`）
 
-- 双触发：`workflow_dispatch`（inputs：`target`、`version`、`config`）与 `push: tags: ['v*']`。
+- 双触发：`workflow_dispatch`（inputs：`target`、`version`、`config`）与 `push: tags: ['**']`（任何 tag 都跑；版本 tag 与通道 tag 一视同仁，版本号怎么取见下一条）。
 - 构建对象从 `Cargo.toml` 推出：`[[bin]]` 名优先，退回包名——模板不写死项目名（ADR-0006）。
 - `plan` 任务在 ubuntu 上读清单与 `Cargo.toml`，产出目标矩阵与本次版本号（dispatch 用输入，tag push 用 tag 名）。 **有清单时以清单为准**；没有清单时按内建的四个平台（macos-arm / macos-intel / windows / linux）各构建一次，任何 Cargo 仓库可直接采用。
 - 版本号的取法：dispatch 输入 → tag 名（仅 tag 触发）→ `Cargo.toml` 的版本 → `0.0.0`； **分支名不算版本**。文件名用这个版本号，Windows Installer 另用它的 `x.x.x.x` 形式（`msi_version`：去 `v` 前缀与预发布后缀、补足四段）。
