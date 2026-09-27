@@ -214,6 +214,9 @@ jobs:
         run: |
           echo "target=${{ matrix.target }} version=$VERSION config=${{ matrix.config }} package=$PACKAGE"
           echo "simulated=${{ matrix.simulated }}"
+          # 真正被构建的那个提交：checkout 用的 ref 可能不是当前分支的 HEAD
+          # （dispatch 可以指定 tag / 分支），logs 里一眼能看出构建的是哪一版。
+          echo "commit=$(git rev-parse HEAD)"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
