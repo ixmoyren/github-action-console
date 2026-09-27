@@ -57,8 +57,8 @@ pub const WORKSPACE_WORKFLOWS: &str = "工作流";
 pub const WORKSPACE_RUNS: &str = "运行";
 pub const WORKSPACE_RUN_HISTORY: &str = "← 运行记录";
 pub const WORKSPACE_RUN_HISTORY_CLOSE: &str = "关闭运行记录 →";
-pub const WORKSPACE_BOARD: &str = "发布看板 →";
-pub const WORKSPACE_BOARD_CLOSE: &str = "关闭看板";
+pub const WORKSPACE_BOARD: &str = "← 发布看板";
+pub const WORKSPACE_BOARD_CLOSE: &str = "关闭看板 →";
 pub const WORKSPACE_NEW_RELEASE_FLOW: &str = "新建发布流";
 pub const WORKSPACE_CANCEL_RELEASE_FLOW: &str = "取消新建发布流";
 
