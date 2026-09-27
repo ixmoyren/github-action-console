@@ -71,6 +71,7 @@ Feature: multi-platform-release
 - `plan` 任务在 ubuntu 上读清单与 `Cargo.toml`，产出目标矩阵与本次版本号（dispatch 用输入，tag push 用 tag 名）。 **有清单时以清单为准**；没有清单时按内建的四个平台（macos-arm / macos-intel / windows / linux）各构建一次，任何 Cargo 仓库可直接采用。
 - 版本号的取法：dispatch 输入 → tag 名（仅 tag 触发）→ `Cargo.toml` 的版本 → `0.0.0`； **分支名不算版本**。文件名用这个版本号，Windows Installer 另用它的 `x.x.x.x` 形式（`msi_version`：去 `v` 前缀与预发布后缀、补足四段）。
 - `build` 任务按目标矩阵展开，每个目标独立执行：`cargo build --release --target …` → `--build-info` 无头自检 → 打包（dmg / msi（无 WiX 模板则退回 zip）/ 未签名 pkg / tar.gz）→ `upload-artifact`（构建产物，临时）→ 带 `::notice::`/`::warning::` 的模拟步骤标注。
+- 每个构建（矩阵条目）带一个可读的名字：`目标名 · 平台/架构 · 产物形式`（如 `web-arm · macos/arm64 · dmg`），由 `plan` 生成、`build` 用 `name:` 采纳，Actions 的 job 列表里一眼能认出是哪条腿。
 - `release` 任务在 tag 触发（或手动勾了 `publish`）时运行：确保该 tag 的 GitHub Release 存在，并把各目标的产物 `gh release upload` 挂上去（发布资产，有公开下载地址，不会过期）。
 - 单目标失败不影响其他目标的继续执行（`fail-fast: false`），也不触碰任何指针。
 

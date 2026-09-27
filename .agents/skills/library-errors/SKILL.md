@@ -153,12 +153,12 @@ Use this only for crates with stable, well-understood error categories. For evol
 
 ```rust
 match client.upload(data) {
-Ok(()) => {}
-Err(e) => match e.kind() {
-MyLibErrorKind::QueueFull => retry_later(),
-MyLibErrorKind::NotFound => create_and_retry(),
-_ => return Err(e.into()),
-}
+    Ok(()) => {}
+    Err(e) => match e.kind() {
+        MyLibErrorKind::QueueFull => retry_later(),
+        MyLibErrorKind::NotFound => create_and_retry(),
+        _ => return Err(e.into()),
+    }
 }
 ```
 

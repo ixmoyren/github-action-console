@@ -21,3 +21,17 @@
 
 **2026-09-27 修 msi 打包**：在真仓库上手动触发时 Windows 腿的 msi 挂了，两个原因—— (1) `plan` 在"手动触发 + 非 tag"时把 `REF_NAME`（分支名 `main`）当版本号，`Product/@Version` 拿到 `main`，WiX 直接拒绝； (2) candle 失败后 light 找不到 `.wixobj`，而 PowerShell 没检查退出码，还照样打印了"msi built"。改法：版本号改为"输入 → tag 名（仅 tag 触发）→ `Cargo.toml` 的版本 → 0.0.0"，另外单独算出 WiX 要的 `x.x.x.x`（`msi_version`，去掉 v 前缀与预发布后缀、补足四段），Windows 步骤逐步检查 `$LASTEXITCODE` 并只在成功后打印 notice；
 `choco install` 前面加了 `Get-Command candle` 判断，免得每次都被"已安装"的警告打扰。
+
+**2026-09-27 回归：上面那次修好又被覆盖了**：同一天再手动触发，Windows 腿还是报
+`CNDL0108`（`Product/@Version` 拿到 `main`）与 `LGHT0103`（找不到 `dist\main.wixobj`），
+说明修好的只是仓库里生成出来的 `.github/workflows/release-target.yml`。模板的唯一源头是
+`templates/github/workflows/release-target.yml`（`release_template::TEMPLATE` 用
+`include_str!` 读它，控制台保存工作流时按"头一行仓库名 + 模板原文"重写生成物），所以后来
+一次"用发布模板覆盖工作流"把生成物按旧模板重写，改动就没了。这次把版本号规则搬回模板，
+再按同一规则重新生成 `.github/workflows/release-target.yml`，两份文件除首行仓库名外逐字一致。
+教训：这条工作流 **只改模板**，生成物跟着走；直接改生成物会在下一次采用模板时被抹掉。
+
+**2026-09-27 给每个构建起名**：矩阵条目默认在 Actions 里显示成一长串字段
+（`build (web-arm, macos, arm64, macos-14, aarch64-apple-darwin, dmg, …)`），认不出是哪条腿。
+`plan` 现在给每个条目算出 `name`（`目标名 · 平台/架构 · 产物形式`，如 `web-arm · macos/arm64 · dmg`），
+`build` job 用 `name: ${{ matrix.name }}` 采纳；有清单与无清单两条分支都走同一套。同样只改模板。
