@@ -52,10 +52,10 @@ pub(super) use tokio::sync::Mutex;
 pub(super) use tracing::{info, warn};
 
 pub(super) use crate::app::{
-    AppProblem, AuthManager, AuthProblem, AuthState, BoardSnapshot, CreateProblem, DownloadState,
-    Downloads, LoadState, ManifestState, Notice, NoticeKind, PublishProblem, PushOutcome,
-    ReleaseBoard, ReleaseFacts, RepositoryList, RepositoryListState, RunActionProblem, RunDetail,
-    RunProblem, SaveProblem, Status, Workspace, WorkspaceTab, notice_for,
+    AppProblem, AuthManager, AuthProblem, AuthState, BoardSnapshot, CreateProblem, DownloadKind,
+    DownloadState, Downloads, LoadState, ManifestState, Notice, NoticeKind, PublishProblem,
+    PushOutcome, ReleaseBoard, ReleaseFacts, RepositoryList, RepositoryListState, RunActionProblem,
+    RunDetail, RunProblem, SaveProblem, Status, Workspace, WorkspaceTab, notice_for,
 };
 pub(super) use crate::app_info::AppInfo;
 pub(super) use crate::github::GitHubGateway;
@@ -195,7 +195,10 @@ struct AppView {
     runs: Vec<WorkflowRun>,
     runs_state: LoadState,
     runs_has_more: bool,
-    run_table: Entity<TableState<runs::RunTableDelegate>>,
+    /// 过完分支过滤、排完序的那一份运行；表照着它画。
+    runs_visible: Vec<WorkflowRun>,
+    /// 运行列表按哪一列排：`None` 是没排（GitHub 给的顺序），`true` 是从大到小。
+    run_sort: Option<(&'static str, bool)>,
     branch_subscription: Option<Subscription>,
     /// Where the runs drawer stands, and which slide is allowed to finish. A
     /// slide that has been overtaken must not take the drawer out from under the
@@ -224,6 +227,11 @@ struct AppView {
     artifacts: Vec<BuildArtifact>,
     artifacts_state: LoadState,
     download_state: DownloadState,
+    /// 运行列表里展开的那条运行，以及每条运行取回来的构建产物。
+    ///
+    /// 只有真有可下载的构建产物时才展开（`expanded_run`），没东西可下就不占地方。
+    expanded_run: Option<u64>,
+    run_artifacts: HashMap<u64, RunArtifacts>,
     /// 已经点下去、还在飞的动作：没回来之前同一个动作再点不算数。
     in_flight: HashSet<actions::ActionKey>,
     /// 每个动作上一次被接受的时间，用来挡掉双击的余波。
@@ -240,6 +248,13 @@ struct DraftJobRow {
     id: Entity<InputState>,
     name: Entity<InputState>,
     command: Entity<InputState>,
+}
+
+/// 一条运行取回来的构建产物，给运行列表里展开的那一行用。
+#[derive(Clone)]
+struct RunArtifacts {
+    state: LoadState,
+    artifacts: Vec<BuildArtifact>,
 }
 
 impl AppView {
@@ -339,13 +354,6 @@ impl AppView {
         }];
         let preview_editor = cx.new(|cx| yaml_editor::yaml_editor_state(window, cx));
 
-        let run_view = cx.weak_entity();
-        let run_table = cx.new(|cx| {
-            TableState::new(runs::RunTableDelegate::new(run_view), window, cx)
-                .col_resizable(true)
-                .sortable(true)
-        });
-
         let repo_view = cx.weak_entity();
         let repo_table = cx.new(move |cx| {
             TableState::new(
@@ -426,7 +434,8 @@ impl AppView {
             runs: Vec::new(),
             runs_state: LoadState::Idle,
             runs_has_more: false,
-            run_table,
+            runs_visible: Vec::new(),
+            run_sort: None,
             branch_subscription: None,
             drawer: workspace::DrawerPhase::Closed,
             drawer_kind: workspace::DrawerKind::Runs,
@@ -449,6 +458,8 @@ impl AppView {
             artifacts: Vec::new(),
             artifacts_state: LoadState::Idle,
             download_state: DownloadState::Idle,
+            expanded_run: None,
+            run_artifacts: HashMap::new(),
             in_flight: HashSet::new(),
             last_clicked: HashMap::new(),
             status,

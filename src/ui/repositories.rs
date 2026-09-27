@@ -277,6 +277,8 @@ impl AppView {
                 this.runs.clear();
                 this.runs_state = LoadState::Idle;
                 this.runs_has_more = false;
+                this.expanded_run = None;
+                this.run_artifacts.clear();
                 this.refresh_run_table(cx);
                 this.workspace_tab = WorkspaceTab::Workflows;
                 cx.notify();

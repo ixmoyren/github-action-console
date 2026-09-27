@@ -547,6 +547,8 @@ impl AppView {
         if self.drawer == DrawerPhase::Closed {
             return;
         }
+        // 抽屉走了，运行列表里展开的那条详情也跟着走：再开抽屉时不该自己弹回来。
+        self.expanded_run = None;
         self.set_workspace_tab(WorkspaceTab::Workflows, cx);
         self.begin_drawer_close(cx);
     }
@@ -1967,7 +1969,7 @@ impl AppView {
             return self.run_detail_ui(cx);
         }
 
-        let rows = self.run_rows(cx);
+        let rows = self.run_rows();
         let mut panel = div().flex().flex_col().gap_3().flex_1().min_h_0().w_full();
 
         // 分支过滤 + 刷新：过滤窄化表格的行，刷新把状态重新问一遍（状态是会变的，
@@ -1994,7 +1996,7 @@ impl AppView {
         );
 
         if rows > 0 {
-            panel = panel.child(div().flex_1().min_h_0().child(self.run_table_ui()));
+            panel = panel.child(div().flex_1().min_h_0().child(self.run_table_ui(cx)));
         } else {
             let message = match self.runs_state {
                 LoadState::Loading => Some(labels::RUNS_LOADING),
@@ -2662,12 +2664,13 @@ mod tests {
     use tokio::sync::Mutex;
 
     use crate::app::{
-        AuthManager, AuthState, Downloads, LoadState, RepositoryList, RepositoryListState,
-        RunDetail, Status, Workspace,
+        AppProblem, AuthManager, AuthState, Downloads, LoadState, RepositoryList,
+        RepositoryListState, RunDetail, Status, Workspace,
     };
     use crate::github::client::OctocrabGateway;
     use crate::github::{
-        Account, GitHubGateway, Job, Repository, RunStatus, Step, Workflow, WorkflowRun,
+        Account, BuildArtifact, GitHubGateway, Job, Repository, RunStatus, Step, Workflow,
+        WorkflowRun,
     };
     use crate::runtime::TokioRuntime;
     use crate::store::Store;
@@ -2675,7 +2678,10 @@ mod tests {
     use crate::app::{BoardCell, BoardRow, BoardSnapshot, ManifestState};
     use crate::release::ReleaseState;
 
-    use super::{ActionKey, AppView, CHANNELS, DrawerKind, ReleaseBoard, Root, Services};
+    use super::super::runs::run_build_opens;
+    use super::{
+        ActionKey, AppView, CHANNELS, DrawerKind, ReleaseBoard, Root, RunArtifacts, Services,
+    };
 
     /// One run of the harness repository's workflow, with the fields the table
     /// shows.
@@ -3402,7 +3408,7 @@ mod tests {
             window.draw(cx).clear(cx);
             assert!(window.try_find("runs-drawer").is_none());
             assert!(window.try_find("open-runs-drawer").is_some());
-            assert_eq!(view.read_with(cx, |view, cx| view.run_rows(cx)), 2);
+            assert_eq!(view.read_with(cx, |view, _| view.run_rows()), 2);
         })
         .unwrap();
 
@@ -3439,7 +3445,7 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             window.draw(cx).clear(cx);
             assert_eq!(window.find("runs-branch-filter").value(), Some("main"));
-            assert_eq!(view.read_with(cx, |view, cx| view.run_rows(cx)), 1);
+            assert_eq!(view.read_with(cx, |view, _| view.run_rows()), 1);
 
             // Closing plays the slide out — the drawer is still in the tree,
             // and only leaves when the slide is done.
@@ -3563,6 +3569,121 @@ mod tests {
             assert!(
                 view.job_step_editors.is_empty(),
                 "a job that left kept its editor"
+            );
+        });
+    }
+
+    /// 跑完的运行：点「已完成」，构建产物就在这一行下面展开——不是弹一个框，详情
+    /// 就在表格里；还在跑的运行没有这个入口。
+    #[gpui_kit::test]
+    fn the_completed_run_expands_its_artifacts_in_the_table(cx: &mut TestAppContext) {
+        let (handle, view, _editor) = workspace_page(cx);
+        let handle: gpui_kit::AnyWindowHandle = handle.into();
+
+        let artifact = BuildArtifact {
+            id: 7,
+            name: "github-action-console-0.1.0-windows.msi".to_owned(),
+            size_in_bytes: 4096,
+            expired: false,
+            download_url: None,
+        };
+        let loaded = |artifacts: Vec<BuildArtifact>| RunArtifacts {
+            state: LoadState::Loaded,
+            artifacts,
+        };
+
+        // 规则就是这么一条：拿到了、并且真有可下载的产物，才展开。
+        assert!(run_build_opens(&loaded(vec![artifact.clone()])));
+        assert!(!run_build_opens(&loaded(Vec::new())));
+        assert!(!run_build_opens(&RunArtifacts {
+            state: LoadState::Failed(AppProblem::Unexpected),
+            artifacts: vec![artifact.clone()],
+        }));
+
+        view.update(cx, |view, cx| {
+            // 第三条还在跑：它没有可点的详情。
+            view.runs.push(WorkflowRun {
+                status: RunStatus::InProgress,
+                conclusion: None,
+                ..run(3, 1, "main", "success")
+            });
+            view.refresh_run_table(cx);
+            // 第一条已经取回来了，就照取回来的样子展开。
+            view.run_artifacts.insert(1, loaded(vec![artifact.clone()]));
+            view.expanded_run = Some(1);
+            view.begin_drawer_open(cx);
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+
+            // 表头在，点得着排序。
+            assert!(window.try_find("run-sort-status").is_some());
+
+            // 跑完的那行，状态是一颗能点的按钮；还在跑的那行只是一句话。
+            assert_eq!(
+                window.find("run-status-1").role(),
+                Some(gpui_kit::Role::Button),
+                "a completed run's status is not the way into its builds"
+            );
+            assert!(
+                window.try_find("run-status-3").is_none(),
+                "a run that is still going offered a build detail"
+            );
+
+            // 详情在这一行下面、还在表格里：它夹在第一条运行与第三条运行之间。
+            let status = window.find("run-status-1").bounds();
+            let download = window.find("run-build-download-7");
+            assert_eq!(download.role(), Some(gpui_kit::Role::Button));
+            assert!(download.visible(), "the artifact download is not on screen");
+            let next = window.find("run-cancel-3").bounds();
+            assert!(
+                status.bottom() <= download.bounds().top(),
+                "the detail is not below its own row"
+            );
+            assert!(
+                download.bounds().bottom() <= next.top(),
+                "the detail spilled past the next row"
+            );
+        })
+        .unwrap();
+
+        // 收回去：再点一下这条运行的详情就没了。
+        view.update(cx, |view, cx| view.toggle_run_build(1, cx));
+        cx.update_window(handle, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(window.try_find("run-build-download-7").is_none());
+        })
+        .unwrap();
+
+        // 点「已完成」这一下就是去取数：状态先落到"正在取"，取回来有产物才会展开。
+        cx.update_window(handle, |_, window, cx| {
+            window.click("run-status-2", cx);
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.run_artifacts.get(&2).map(|artifacts| artifacts.state),
+                Some(LoadState::Loading),
+                "clicking the completed status did not start a fetch"
+            );
+        });
+
+        // 表头点两下按状态倒着排：还没跑完的那条排到最前面。
+        cx.update_window(handle, |_, window, cx| {
+            window.click("run-sort-status", cx);
+            window.draw(cx).clear(cx);
+            window.click("run-sort-status", cx);
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.runs_visible.first().map(|run| run.id),
+                Some(3),
+                "clicking the status header did not sort the runs"
             );
         });
     }

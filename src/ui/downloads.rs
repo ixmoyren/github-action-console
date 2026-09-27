@@ -99,11 +99,13 @@ impl AppView {
     pub(super) fn download_artifact(&mut self, artifact: BuildArtifact, cx: &mut Context<Self>) {
         let gateway = self.gateway.clone();
         let manager = self.manager.clone();
-        let detail = self.detail.clone();
+        // 产物不止从运行详情页下：运行列表里点开「已完成」也走这里。仓库以当前
+        // 工作区为准，那条路根本不用先打开详情。
+        let workspace = self.workspace.clone();
         let downloads = self.downloads.clone();
         let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
-            let repository = { detail.lock().await.repository().map(str::to_owned) };
+            let repository = { workspace.lock().await.repository().map(str::to_owned) };
             let Some(repository) = repository else {
                 return;
             };
