@@ -6,12 +6,17 @@
            -dUpgradeCode=<稳定的 GUID> main.wxs
     light -ext WixUIExtension -o <target>-<version>.msi main.wixobj
   真正的代码签名（signtool）在 CI 里标注为模拟（无证书）。
+
+  Product/@Codepage="936"：MSI 数据库默认 1252，装不下 DowngradeErrorMessage 里的
+  中文，light 会以 LGHT0311 拒绝；简体中文包用 936（GBK）。代价是库里所有字符串都得
+  落在这个代码页里，往这里加文案时别塞 GBK 之外的字（emoji 就不行）。
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product
     Id="*"
     Name="GitHub Action Console"
     Language="1033"
+    Codepage="936"
     Version="$(var.ProductVersion)"
     Manufacturer="github-action-console"
     UpgradeCode="$(var.UpgradeCode)"

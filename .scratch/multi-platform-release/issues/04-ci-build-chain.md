@@ -35,3 +35,10 @@
 （`build (web-arm, macos, arm64, macos-14, aarch64-apple-darwin, dmg, …)`），认不出是哪条腿。
 `plan` 现在给每个条目算出 `name`（`目标名 · 平台/架构 · 产物形式`，如 `web-arm · macos/arm64 · dmg`），
 `build` job 用 `name: ${{ matrix.name }}` 采纳；有清单与无清单两条分支都走同一套。同样只改模板。
+
+**2026-09-27 msi 打包第二关：light 的代码页**。版本号修好、candle 过了之后，light 报
+`LGHT0311`：`packaging/windows/main.wxs(20)` 的字符串里有 1252 放不下的字符——就是
+`<MajorUpgrade DowngradeErrorMessage="已安装更新的版本。">` 那句中文，MSI 数据库默认代码页
+是 1252。按 light 自己在错误里给的选项，给 `<Product>` 加 `Codepage="936"`（简体中文 GBK）。
+代价：库里所有字符串都要落在 936 里，以后往 wxs 里加文案别再塞 GBK 之外的字（emoji 就不行）。
+顺带记一笔：`$LASTEXITCODE` 那道自检这次派上用场了——不然 light 失败还是会被"msi built"盖过去。
